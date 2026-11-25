@@ -5,14 +5,17 @@ import Control.Concurrent.Async (wait, withAsync)
 import Control.Exception (bracket, try)
 import Control.Monad (unless, void)
 import Data.ByteString qualified as BS
+import Data.HashMap.Strict qualified as HashMap
 import Data.IORef
 import Data.Text qualified as T
 import Database.Redis qualified as R
-import Effectful (liftIO, runEff)
+import Effectful (IOE, liftIO, runEff)
 import Effectful.Exception qualified as E
 import Fixture
+import OpenTelemetry.Attributes (toAttribute)
 import Shibuya
 import Shibuya.Adapter.Redis
+import Shibuya.Adapter.Redis qualified as ReaderFields (ReaderConfig (telemetry))
 import Streamly.Data.Stream qualified as Stream
 import System.Timeout (timeout)
 
@@ -37,7 +40,9 @@ main = do
       after <- countClients
       check "partial acquisition released read connection" (before == after)
       check "reader rejects concurrent handlers" (either (const True) (const False) (validateDeliveryPolicy IndependentReader StrictInOrder (Async 2)))
-      withRedisRuntime pools (defaultRuntimeOptions {adapterTelemetry = defaultAdapterTelemetry {traceCorrelation = LinkOnly}}) roundTrip
+      withRedisRuntime pools defaultRuntimeOptions roundTrip
+      withRedisRuntime pools defaultRuntimeOptions checkTelemetryDefaults
+      withRedisRuntime pools defaultRuntimeOptions checkGroupTelemetryDefault
       withRedisRuntime pools defaultRuntimeOptions $ \runtime ->
         withAsync (pollStream runtime (R.xreadOpts [("idle", "0-0")] (R.XReadOpts (Just 1200) (Just 1)))) $ \reader -> do
           -- Wait for Redis to confirm that the dedicated connection is blocked.
@@ -62,10 +67,20 @@ roundTrip runtime = do
       alternate = RedisEntry (SourceIdentity "dem" Nothing "oorders") (EntryId 7 2) pairs
       reason = InvalidPayload (T.replicate 600 "x")
       owner = LogicalReader "index"
+  let headers = [("traceparent", "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"), ("tracestate", "acme=opaque")]
+      traced = expected {fields = pairs <> headers}
+      convert = decodeEnvelope Right (const Nothing)
+  check "default extractor reads both W3C fields" (((.traceContext) <$> convert defaultTraceContext traced) == Right (Just headers))
+  check "tracestate by itself does not propagate" (defaultTraceContext (traced {fields = drop 1 headers}) == Nothing)
+  check "untraced entries have no context" (((.traceContext) <$> convert defaultTraceContext expected) == Right Nothing)
+  check "custom extractor overrides W3C fields" (((.traceContext) <$> convert (const Nothing) traced) == Right Nothing)
+  check
+    "Redis attributes omit the stream key"
+    ((entryEnvelope traced).attributes == HashMap.fromList [("messaging.system", toAttribute ("redis" :: T.Text)), ("messaging.message.id", toAttribute ("7-2" :: T.Text)), ("shibuya.redis.entry_id", toAttribute ("7-2" :: T.Text))])
   check "length-framed message ID" (expectedId /= (entryEnvelope alternate).messageId)
   check "missing generation distinct from empty" (expectedId /= (entryEnvelope (expected {sourceIdentity = identity {generation = Just ""}})).messageId)
   check "reject invalid stream ID" (parseEntryId "18446744073709551616-1" == Nothing)
-  check "decoder failure retains identity" (decodeEnvelope (const (Left reason)) (const Nothing) expected == Left @DecodeFailure @(Envelope ()) (DecodeFailure expected reason))
+  check "decoder failure retains identity" (decodeEnvelope (const (Left reason)) (const Nothing) defaultTraceContext expected == Left @DecodeFailure @(Envelope ()) (DecodeFailure expected reason))
   void $ runCommand runtime (R.xadd key "7-2" pairs)
   started <- newEmptyMVar
   intakeClosed <- newEmptyMVar
@@ -82,14 +97,14 @@ roundTrip runtime = do
         let finish decision = liftIO $ do
               check "runner decision" (decision == AckDeadLetter reason)
               readMVar intakeClosed
-              inserted <- runCommand runtime (storeRejection "failures" owner entry reason)
+              inserted <- runCommand runtime (storeRejection "failures" owner entry reason Nothing)
               loseReply <- atomicModifyIORef' firstReply (\first -> (False, first))
               if loseReply && inserted then fail "fixture hid successful Redis reply" else pure ()
               count <- runCommand runtime (R.hlen "failures")
               check "one logical rejection" (not loseReply && not inserted && count == 1)
               putMVar finalized ()
         pure $ mkIngested (entryEnvelope entry) (AckHandle finish)
-      baseAdapter = mkRedisAdapter runtime "redis-fixture" (Stream.fromEffect sourceAction)
+      baseAdapter = mkRedisAdapter runtime "redis-fixture" (defaultAdapterTelemetry {traceCorrelation = LinkOnly}) (Stream.fromEffect sourceAction)
       adapter = baseAdapter {shutdown = baseAdapter.shutdown >> liftIO (void (tryPutMVar intakeClosed ()))}
       handler message = liftIO $ do
         check "wire fidelity and stable ID" (message.envelope.payload == expected && message.envelope.messageId == expectedId)
@@ -105,3 +120,16 @@ roundTrip runtime = do
       drained <- stopAppGracefully (ShutdownConfig 2 4) app
       liftIO $ check "graceful app drain" drained
   takeMVar finalized
+
+checkTelemetryDefaults :: RedisRuntime -> IO ()
+checkTelemetryDefaults runtime = do
+  let config = rawReaderConfig "reader" "index" (SourceIdentity "test" Nothing "defaults") Earliest
+  check "reader defaults to linked roots" (config.telemetry.traceCorrelation == LinkOnly)
+  reader <- newReader @'[Tracing, IOE] runtime (config {ReaderFields.telemetry = defaultAdapterTelemetry})
+  check "reader applies telemetry override" (reader.readerAdapter.telemetry.traceCorrelation == ParentAndLink)
+
+checkGroupTelemetryDefault :: RedisRuntime -> IO ()
+checkGroupTelemetryDefault runtime = do
+  let config = rawGroupConfig "worker" (SourceIdentity "test" Nothing "defaults") "jobs" "solo" (CreateIfAbsent (EntryId 0 0))
+  worker <- newGroupWorker @'[Tracing, IOE] runtime config
+  check "group defaults to parent and link" (worker.groupAdapter.telemetry.traceCorrelation == ParentAndLink)

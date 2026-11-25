@@ -47,7 +47,7 @@ storeIn cell = CheckpointStore (\_ _ -> readIORef cell) $ \_ _ old new -> do
     if current == old || current == Just new then (Just new, True) else (current, False)
   assert "checkpoint compare-and-set" updated
 
-withReader :: (IOE :> es) => ConnectionSource -> ReaderConfig a -> (Reader es a -> IO b) -> IO b
+withReader :: (IOE :> es, Tracing :> es) => ConnectionSource -> ReaderConfig a -> (Reader es a -> IO b) -> IO b
 withReader pools config use = withRedisRuntime pools defaultRuntimeOptions $ \runtime ->
   newReader runtime config >>= use
 

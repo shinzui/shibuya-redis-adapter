@@ -7,7 +7,7 @@ import Control.Exception (Exception, Handler (..), IOException, bracket, catches
 import Control.Monad (unless)
 import Database.Redis qualified as Redis
 import GHC.Generics (Generic)
-import Shibuya (AdapterTelemetry, Concurrency, OrderingPolicy (..), PolicyError (..), defaultAdapterTelemetry, validatePolicy)
+import Shibuya (Concurrency, OrderingPolicy (..), PolicyError (..), validatePolicy)
 import Shibuya.Adapter.Redis.Types
 import System.Timeout (timeout)
 
@@ -21,13 +21,12 @@ data RuntimeOptions = RuntimeOptions
     prefetchLimit :: !Int,
     reconnectAttempts :: !Int,
     reconnectDelayMicros :: !Int,
-    adapterTelemetry :: !AdapterTelemetry,
     observe :: AdapterEvent -> IO ()
   }
   deriving stock (Generic)
 
 defaultRuntimeOptions :: RuntimeOptions
-defaultRuntimeOptions = RuntimeOptions 2000000 250 32 5 100000 defaultAdapterTelemetry (const (pure ()))
+defaultRuntimeOptions = RuntimeOptions 2000000 250 32 5 100000 (const (pure ()))
 
 data RedisRuntime = RedisRuntime
   { readPool :: !Redis.Connection,

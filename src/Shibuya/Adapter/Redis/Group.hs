@@ -5,16 +5,20 @@ import Control.Exception (Exception, catch, mask, throwIO)
 import Control.Monad (unless, void, when)
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as C8
+import Data.HashMap.Strict qualified as HashMap
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
+import Data.Text.Encoding (decodeUtf8')
 import Database.Redis qualified as Redis
 import Effectful (IOE, liftIO, (:>))
+import OpenTelemetry.Attributes (toAttribute)
 import Shibuya
 import Shibuya.Adapter.Redis.Adapter
 import Shibuya.Adapter.Redis.Connection
 import Shibuya.Adapter.Redis.DeadLetter
 import Shibuya.Adapter.Redis.Group.Scripts
 import Shibuya.Adapter.Redis.Types
+import Shibuya.Telemetry.Propagation (currentTraceHeaders)
 import Streamly.Data.Stream qualified as Stream
 import System.Entropy (getEntropy)
 
@@ -52,6 +56,8 @@ data GroupConfig a = GroupConfig
     groupDeadLetters :: !(Maybe ByteString),
     groupDecode :: RedisEntry -> Either DeadLetterReason a,
     groupHeaders :: RedisEntry -> Maybe Headers,
+    groupTraceContext :: RedisEntry -> Maybe TraceHeaders,
+    telemetry :: !AdapterTelemetry,
     -- | Called before removing a pending ID whose payload has disappeared.
     onMissingPending :: MissingPending -> IO (),
     -- | Sample total PEL depth on scan wrap and highest idle time in the page.
@@ -60,7 +66,7 @@ data GroupConfig a = GroupConfig
 
 rawGroupConfig :: Text -> SourceIdentity -> ByteString -> ByteString -> GroupStart -> GroupConfig RedisEntry
 rawGroupConfig name src group worker start =
-  GroupConfig name src group worker start 1 32 30000 10 Nothing Right (const Nothing) (const (pure ())) False
+  GroupConfig name src group worker start 1 32 30000 10 Nothing Right (const Nothing) defaultTraceContext defaultAdapterTelemetry (const (pure ())) False
 
 data Group es a = Group
   { groupAdapter :: !(Adapter es a),
@@ -84,7 +90,7 @@ groupAttemptKey :: SourceIdentity -> ByteString -> EntryId -> ByteString
 groupAttemptKey src group position =
   groupStatePrefix <> frame [group, entryIdentity (RedisEntry src position [])]
 
-newGroupWorker :: (IOE :> es) => RedisRuntime -> GroupConfig a -> IO (Group es a)
+newGroupWorker :: (IOE :> es, Tracing :> es) => RedisRuntime -> GroupConfig a -> IO (Group es a)
 newGroupWorker runtime cfg = do
   let concurrency = if cfg.groupInFlight == 1 then Serial else Async cfg.groupInFlight
   unless
@@ -194,24 +200,24 @@ newGroupWorker runtime cfg = do
                 [Redis.Bulk (Just "absent")] -> pure Nothing
                 [Redis.Bulk (Just "stale")] -> pure (Just Superseded)
                 _ -> throwIO InvalidStreamReply
-            reject reason = do
-              let (field, value) = rejectionRecord (ConsumerGroup cfg.groupName) entry reason
+            reject reason headers = do
+              let (field, value) = rejectionRecord (ConsumerGroup cfg.groupName) entry reason headers
               transition "reject" [field, value] DeadLettered
-            scheduleRetry delay = do
+            scheduleRetry delay headers = do
               let args = [milliseconds delay, number cfg.groupRetryLimit]
               result <- attempt "retry" entry.entryId token args
               case result of
                 [Redis.Bulk (Just "retry-limit")] -> case cfg.groupDeadLetters of
                   Nothing -> throwIO (GroupRetryLimit entry.entryId)
-                  Just _ -> reject MaxRetriesExceeded
+                  Just _ -> reject MaxRetriesExceeded headers
                 _ -> transitionEvent result Retried
-            finalize decision = mask $ \restore -> do
+            finalize headers decision = mask $ \restore -> do
               event <- restore $ case decision of
                 AckOk -> transition "ack" [] Acknowledged
-                AckRetry (RetryDelay delay) -> scheduleRetry delay
+                AckRetry (RetryDelay delay) -> scheduleRetry delay headers
                 AckDeadLetter reason -> case cfg.groupDeadLetters of
                   Nothing -> throwIO (GroupRejectionWithoutDestination entry.entryId)
-                  Just _ -> reject reason
+                  Just _ -> reject reason headers
                 AckHalt _ -> stopIntake runtime >> pure Nothing
               retire
               mapM_ emit event
@@ -220,11 +226,20 @@ newGroupWorker runtime cfg = do
               if superseded result
                 then atomically (writeTVar valid False) >> emit Superseded
                 else unless (result == [Redis.Bulk (Just "ok")]) (throwIO InvalidStreamReply)
-        case decodeEnvelope cfg.groupDecode cfg.groupHeaders entry of
-          Left (DecodeFailure _ reason) -> finalize (AckDeadLetter reason) >> pull next
+        case decodeEnvelope cfg.groupDecode cfg.groupHeaders cfg.groupTraceContext entry of
+          Left (DecodeFailure _ reason) -> finalize Nothing (AckDeadLetter reason) >> pull next
           Right envelope -> do
             emit Delivered
-            let delivery = mkIngested (envelope {attempt = count}) (AckHandle (liftIO . finalize))
+            let redisAttributes = case decodeUtf8' cfg.groupName of
+                  Left _ -> envelope.attributes
+                  Right group -> HashMap.insert "messaging.consumer.group.name" (toAttribute group) envelope.attributes
+                finish decision = do
+                  headers <- case decision of
+                    AckDeadLetter _ -> currentTraceHeaders
+                    AckRetry _ | maybe True (>= Attempt (fromIntegral cfg.groupRetryLimit)) count -> currentTraceHeaders
+                    _ -> pure Nothing
+                  liftIO (finalize headers decision)
+                delivery = mkIngested (envelope {attempt = count, attributes = redisAttributes}) (AckHandle finish)
             pure $
               Just
                 ( delivery
@@ -257,7 +272,7 @@ newGroupWorker runtime cfg = do
           _ -> throwIO InvalidStreamReply
 
   let source = Stream.unfoldrM (liftIO . pull) (Poll origin True)
-  pure (Group (mkRedisAdapter runtime cfg.groupAdapterName source) concurrency)
+  pure (Group (mkRedisAdapter runtime cfg.groupAdapterName cfg.telemetry source) concurrency)
   where
     src = cfg.groupSource
     emit = runtime.options.observe

@@ -2,6 +2,12 @@
 
 ## 2026-11-25
 
+* **Update**: FRIC-2 accepted: Document the working endpoint and validate exported traces through the global Jaeger API.
+
+
+* **Addition**: FRIC-2 records detour interface friction with mori://iand675/hs-opentelemetry/packages/hs-opentelemetry-exporter-otlp: Haskell OTLP exporter appends the signal path to the trace endpoint
+
+
 * **Update**: FRIC-1 resolved: Root package builds using the managed flake and a project-specific dependency overlay.
 
 

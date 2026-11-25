@@ -43,8 +43,10 @@ library
     containers,
     effectful-core,
     entropy,
+    hs-opentelemetry-api ^>=1.0,
     stm,
     streamly-core,
+    unordered-containers ^>=0.2,
 
 common redis-integration
   import: shared
@@ -65,6 +67,9 @@ test-suite runner-fixture
   import: redis-integration
   type: exitcode-stdio-1.0
   main-is: Main.hs
+  build-depends:
+    hs-opentelemetry-api ^>=1.0,
+    unordered-containers ^>=0.2,
 
 test-suite reader-integration
   import: redis-integration
@@ -80,6 +85,15 @@ test-suite release-integration
   import: redis-integration
   type: exitcode-stdio-1.0
   main-is: ReleaseSpec.hs
+
+test-suite telemetry-integration
+  import: redis-integration
+  type: exitcode-stdio-1.0
+  main-is: TelemetrySpec.hs
+  build-depends:
+    hs-opentelemetry-api ^>=1.0,
+    hs-opentelemetry-exporter-in-memory ^>=1.0,
+    hs-opentelemetry-sdk ^>=1.0,
 
 common example
   import: shared

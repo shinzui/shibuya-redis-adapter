@@ -45,4 +45,6 @@ Workers use explicit group creation or attachment and unique per-instance consum
 
 The processor helpers set compatible Shibuya policies. Readers use strict serial processing, and workers use unordered processing up to the configured group capacity. A reader cannot supply a batch that waits for several unfinalized entries. Use separate runtimes for separate processors.
 
+For OpenTelemetry correlation, producers can write W3C `traceparent` and optional `tracestate` as stream fields. Readers default to `LinkOnly`, which starts a linked trace for each delivery. Group workers default to `ParentAndLink`, which joins the producer trace and also links to its span. Set the mode configuration’s `telemetry` field to override the policy or use its trace-context extractor to read a custom field convention. Rejections from a traced finalizer retain the consumer span’s W3C context.
+
 See [compatibility and operations](docs/compatibility.md) for tested versions, Redis permissions and recovery behavior.

@@ -6,10 +6,13 @@ import Data.ByteString qualified as BS
 import Data.ByteString.Builder qualified as Builder
 import Data.ByteString.Char8 qualified as C8
 import Data.ByteString.Lazy qualified as LBS
+import Data.HashMap.Strict qualified as HashMap
+import Data.Text (Text)
 import Data.Text.Encoding qualified as Text
 import Data.Word (Word64)
 import GHC.Generics (Generic)
-import Shibuya (Cursor (..), DeadLetterReason, Envelope (..), Headers, MessageId (..), mkEnvelope)
+import OpenTelemetry.Attributes (toAttribute)
+import Shibuya (Cursor (..), DeadLetterReason, Envelope (..), Headers, MessageId (..), TraceHeaders, mkEnvelope)
 
 data EntryId = EntryId !Word64 !Word64 deriving stock (Eq, Ord, Show, Generic)
 
@@ -59,17 +62,31 @@ entryIdentity entry =
 entryEnvelope :: RedisEntry -> Envelope RedisEntry
 entryEnvelope entry =
   (mkEnvelope (MessageId (Text.decodeUtf8 hexId)) entry)
-    { cursor = Just (CursorText (Text.decodeUtf8 (renderEntryId entry.entryId)))
+    { cursor = Just (CursorText position),
+      attributes =
+        HashMap.fromList
+          [ ("messaging.system", toAttribute ("redis" :: Text)),
+            ("messaging.message.id", toAttribute position),
+            ("shibuya.redis.entry_id", toAttribute position)
+          ]
     }
   where
+    position = Text.decodeUtf8 (renderEntryId entry.entryId)
     hexId = LBS.toStrict (Builder.toLazyByteString (Builder.byteStringHex (entryIdentity entry)))
+
+-- | Extract W3C headers from the first field with each standard name.
+-- Shibuya validates the headers when it creates the consumer span.
+defaultTraceContext :: RedisEntry -> Maybe TraceHeaders
+defaultTraceContext entry = do
+  parent <- lookup "traceparent" entry.fields
+  pure (("traceparent", parent) : [("tracestate", state) | Just state <- [lookup "tracestate" entry.fields]])
 
 data DecodeFailure = DecodeFailure !RedisEntry !DeadLetterReason deriving stock (Eq, Show)
 
-decodeEnvelope :: (RedisEntry -> Either DeadLetterReason a) -> (RedisEntry -> Maybe Headers) -> RedisEntry -> Either DecodeFailure (Envelope a)
-decodeEnvelope decode selectHeaders entry = case decode entry of
+decodeEnvelope :: (RedisEntry -> Either DeadLetterReason a) -> (RedisEntry -> Maybe Headers) -> (RedisEntry -> Maybe TraceHeaders) -> RedisEntry -> Either DecodeFailure (Envelope a)
+decodeEnvelope decode selectHeaders selectTrace entry = case decode entry of
   Left reason -> Left (DecodeFailure entry reason)
-  Right value -> Right ((value <$ entryEnvelope entry) {headers = selectHeaders entry})
+  Right value -> Right ((value <$ entryEnvelope entry) {headers = selectHeaders entry, traceContext = selectTrace entry})
 
 data AdapterEvent
   = Delivered

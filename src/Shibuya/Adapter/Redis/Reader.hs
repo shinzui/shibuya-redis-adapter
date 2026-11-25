@@ -16,6 +16,7 @@ import Shibuya.Adapter.Redis.Adapter
 import Shibuya.Adapter.Redis.Connection
 import Shibuya.Adapter.Redis.DeadLetter
 import Shibuya.Adapter.Redis.Types
+import Shibuya.Telemetry.Propagation (currentTraceHeaders)
 import Streamly.Data.Stream qualified as Stream
 
 data Checkpoint = Checkpoint
@@ -68,6 +69,8 @@ data ReaderConfig a = ReaderConfig
     checkpointStore :: !(Maybe CheckpointStore),
     readerDecode :: RedisEntry -> Either DeadLetterReason a,
     readerHeaders :: RedisEntry -> Maybe Headers,
+    readerTraceContext :: RedisEntry -> Maybe TraceHeaders,
+    telemetry :: !AdapterTelemetry,
     -- Return the evidence to save with this entry and report a discontinuity
     -- separately. BestEffort accepts the returned evidence even on a gap.
     checkContinuity :: Checkpoint -> RedisEntry -> (Maybe ByteString, Maybe Text),
@@ -86,6 +89,8 @@ rawReaderConfig name identity src start =
     Nothing
     Right
     (const Nothing)
+    defaultTraceContext
+    (defaultAdapterTelemetry {traceCorrelation = LinkOnly})
     (\_ _ -> (Nothing, Nothing))
     (const (pure StopAndRebuild))
     Nothing
@@ -108,7 +113,7 @@ data ReaderPull
   | Await !(TMVar HeadResult) !RedisEntry !Checkpoint !Int ![RedisEntry]
 
 -- | Create one reader per runtime. Keep the runtime open through runner drain.
-newReader :: (IOE :> es) => RedisRuntime -> ReaderConfig a -> IO (Reader es a)
+newReader :: (IOE :> es, Tracing :> es) => RedisRuntime -> ReaderConfig a -> IO (Reader es a)
 newReader runtime cfg = do
   when
     ( cfg.readerRetryLimit < 0
@@ -181,13 +186,13 @@ newReader runtime cfg = do
       deliver previous next entry attempt rest = do
         gate <- newEmptyTMVarIO
         let complete = commit previous next
-            reject reason = case cfg.readerDeadLetters of
+            reject reason headers = case cfg.readerDeadLetters of
               Nothing -> throwIO (ReaderRejectionWithoutDestination entry.entryId)
               Just key -> do
-                _ <- retryConnection runtime $ runCommand runtime $ storeRejection key (LogicalReader cfg.readerIdentity) entry reason
+                _ <- retryConnection runtime $ runCommand runtime $ storeRejection key (LogicalReader cfg.readerIdentity) entry reason headers
                 emit DeadLettered
                 complete
-            finalize decision = mask $ \restore -> do
+            finalize headers decision = mask $ \restore -> do
               unfinalized <- atomically (isEmptyTMVar gate)
               when unfinalized $ case decision of
                 AckOk -> do
@@ -195,28 +200,34 @@ newReader runtime cfg = do
                   atomically (putTMVar gate Advance)
                   emit Acknowledged
                 AckDeadLetter reason -> do
-                  restore (reject reason)
+                  restore (reject reason headers)
                   atomically (putTMVar gate Advance)
                 AckRetry (RetryDelay delay)
                   | attempt == cfg.readerRetryLimit -> case cfg.readerDeadLetters of
                       Nothing -> throwIO (ReaderRetryLimit entry.entryId)
                       Just _ -> do
-                        restore (reject MaxRetriesExceeded)
+                        restore (reject MaxRetriesExceeded headers)
                         atomically (putTMVar gate Advance)
                   | otherwise -> do
                       let micros = max 0 (min (toInteger (maxBound :: Int)) (ceiling (delay * 1000000)))
                       atomically (putTMVar gate (RepeatAfter (fromInteger micros)))
                       emit Retried
                 AckHalt _ -> stopIntake runtime
-        case decodeEnvelope cfg.readerDecode cfg.readerHeaders entry of
-          Left (DecodeFailure _ reason) -> reject reason >> pull (Ready rest)
+        case decodeEnvelope cfg.readerDecode cfg.readerHeaders cfg.readerTraceContext entry of
+          Left (DecodeFailure _ reason) -> reject reason Nothing >> pull (Ready rest)
           Right envelope -> do
             emit Delivered
-            let delivery = mkIngested (envelope {attempt = Just (Attempt (fromIntegral attempt))}) (AckHandle (liftIO . finalize))
+            let finish decision = do
+                  headers <- case decision of
+                    AckDeadLetter _ -> currentTraceHeaders
+                    AckRetry _ | attempt == cfg.readerRetryLimit -> currentTraceHeaders
+                    _ -> pure Nothing
+                  liftIO (finalize headers decision)
+                delivery = mkIngested (envelope {attempt = Just (Attempt (fromIntegral attempt))}) (AckHandle finish)
             pure (Just (delivery, Await gate entry next attempt rest))
 
   let deliveries = Stream.unfoldrM (liftIO . pull) (Ready [])
-  pure (Reader (mkRedisAdapter runtime cfg.readerName deliveries) (readIORef completed))
+  pure (Reader (mkRedisAdapter runtime cfg.readerName cfg.telemetry deliveries) (readIORef completed))
   where
     src = cfg.readerSource
     origin = Checkpoint (EntryId 0 0) Nothing

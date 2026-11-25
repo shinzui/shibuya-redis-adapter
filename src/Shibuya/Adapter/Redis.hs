@@ -7,6 +7,7 @@ module Shibuya.Adapter.Redis
     entryEnvelope,
     DecodeFailure (..),
     decodeEnvelope,
+    defaultTraceContext,
     AdapterEvent (..),
     RejectionOwner (..),
     rejectionRecord,

@@ -11,6 +11,12 @@ provenance:
     model: "claude-fable-5-2"
     harness: "claude-code"
     at: 2026-11-25T13:50:20Z
+  revisions:
+    - model: "gpt-6.2-sol"
+      harness: "codex-cli"
+      at: 2026-11-25T14:14:16Z
+      mode: "implement"
+      note: "Propagate Redis tracing and verify span export through global Jaeger"
 ---
 
 # Propagate trace context and Redis span attributes
@@ -30,16 +36,16 @@ Shibuya opens one OpenTelemetry span for each message a handler processes. For t
 ## Progress
 
 
-- [ ] M1. Envelopes carry `traceContext` from the entry's fields and Redis span attributes; an application hook can override the extraction.
-- [ ] M2. `ReaderConfig` and `GroupConfig` each have a `telemetry` field (reader default `LinkOnly`, group default `ParentAndLink`); `RuntimeOptions` no longer has `adapterTelemetry`.
-- [ ] M3. A `telemetry-integration` suite with an in-memory span exporter proves link-only correlation for a reader, parent-and-link for a worker, and the attributes.
-- [ ] M4. A dead-letter record written from a finalizer includes the consumer span's trace headers; ADR 1 is amended and a telemetry ADR is added.
+- [x] M1. Envelopes carry `traceContext` from the entry's fields and Redis span attributes; an application hook can override the extraction. Verified 2026-11-25. The fixture covers both headers, tracestate without a parent, and an extractor override.
+- [x] M2. `ReaderConfig` and `GroupConfig` each have a `telemetry` field (reader default `LinkOnly`, group default `ParentAndLink`); `RuntimeOptions` no longer has `adapterTelemetry`. Verified 2026-11-25. The fixture checks both defaults and a setting that reaches the reader adapter.
+- [x] M3. A `telemetry-integration` suite with an in-memory span exporter proves link-only correlation for a reader, parent-and-link for a worker, and the attributes. Verified 2026-11-25. All five suites passed on Redis 8.10.1. The exporter checks the reader root and link, the group parent and link, no-context input, and span tags.
+- [x] M4. A dead-letter record written from a finalizer includes the consumer span's trace headers; ADR 1 is amended and a telemetry ADR is added. Verified 2026-11-25. The suite checks the consumer traceparent for a reader rejection and group retry exhaustion, plus a tracing-disabled rejection.
 
 
 ## Surprises & Discoveries
 
 
-(None yet.)
+Shibuya sets the processor name as the destination and ordinarily uses the full envelope identity as its span message ID. The latter encodes the stream key. The adapter overrides that span tag with the native Redis ID while preserving the envelope ID. See [ADR 5](../adr/0005-correlate-redis-deliveries-with-producer-traces.md).
 
 
 ## Decision Log
@@ -61,7 +67,17 @@ Shibuya opens one OpenTelemetry span for each message a handler processes. For t
 ## Outcomes & Retrospective
 
 
-(To be filled during and after implementation.)
+Both processor modes exported correlated spans through OTLP to the global Jaeger instance on 2026-11-25. Jaeger returned the worker in the producer’s trace and the reader in a distinct trace linked to the producer. The in-memory test directly verifies the worker parent and both links. The live check can be repeated as follows.
+
+```bash
+nix develop -c env OTEL_SDK_DISABLED=false OTEL_TRACES_EXPORTER=otlp \
+  OTEL_SERVICE_NAME=shibuya-redis-adapter-qualification \
+  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:10428/insert/opentelemetry \
+  OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf \
+  cabal test telemetry-integration --test-show-details=direct --test-options=--jaeger
+```
+
+Query the printed producer trace ID at `http://127.0.0.1:16686/api/traces/<trace-id>`. Search the same service for `process jaeger-reader` and match its producer reference to the printed trace and span IDs. Allow time for the collector to index new spans. [FRIC-2](../friction-log/2-haskell-otlp-exporter-appends-the-signal-path-to-the-trace-endpoint.md) is accepted because the released Haskell exporter appends the signal path and works with this collector prefix.
 
 
 ## Context and Orientation
