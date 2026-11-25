@@ -5,6 +5,7 @@ module Shibuya.Adapter.Redis.Connection
     RedisRuntime (options, stopped),
     AdapterError (..),
     withRedisRuntime,
+    withRuntimeAttachment,
     stopIntake,
     runCommand,
     DeliveryMode (..),
@@ -20,7 +21,7 @@ where
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (race)
 import Control.Concurrent.STM (TVar, atomically, check, newTVarIO, readTVar, readTVarIO, writeTVar)
-import Control.Exception (Exception, Handler (..), IOException, bracket, catches, evaluate, throwIO)
+import Control.Exception (Exception, Handler (..), IOException, bracket, catches, evaluate, mask, onException, throwIO)
 import Control.Monad (unless)
 import Database.Redis qualified as Redis
 import GHC.Generics (Generic)
@@ -30,33 +31,67 @@ import System.Timeout (timeout)
 
 -- | Create a dedicated read pool in both cases. A borrowed command pool must
 -- address the same primary/database and stay live until the bracket returns.
-data ConnectionSource = OwnPools Redis.ConnectInfo | BorrowCommands Redis.ConnectInfo Redis.Connection
+data ConnectionSource
+  = -- | Open and close both pools using the supplied connection details.
+    OwnPools Redis.ConnectInfo
+  | -- | Open the read pool and borrow the supplied command pool.
+    BorrowCommands Redis.ConnectInfo Redis.Connection
 
+-- | Bounds for a runtime and a callback for adapter events.
 data RuntimeOptions = RuntimeOptions
-  { commandTimeoutMicros :: !Int,
+  { -- | Timeout per Redis command in microseconds. Defaults to 2,000,000.
+    commandTimeoutMicros :: !Int,
+    -- | Blocking read time in milliseconds. Defaults to 250 and must be below the command timeout.
     pollMillis :: !Int,
+    -- | Maximum entries per new read. Defaults to 32.
     prefetchLimit :: !Int,
+    -- | Connection retries after the initial attempt. Defaults to 5.
     reconnectAttempts :: !Int,
+    -- | Delay between connection attempts in microseconds. Defaults to 100,000.
     reconnectDelayMicros :: !Int,
+    -- | Handle an adapter event promptly. Defaults to discarding events.
     observe :: AdapterEvent -> IO ()
   }
   deriving stock (Generic)
 
+-- | Standard connection limits and a no-op observer.
 defaultRuntimeOptions :: RuntimeOptions
-defaultRuntimeOptions = RuntimeOptions 2000000 250 32 5 100000 (const (pure ()))
+defaultRuntimeOptions =
+  RuntimeOptions
+    { commandTimeoutMicros = 2000000,
+      pollMillis = 250,
+      prefetchLimit = 32,
+      reconnectAttempts = 5,
+      reconnectDelayMicros = 100000,
+      observe = const (pure ())
+    }
 
+-- | Connection pools and intake state for one reader or worker.
 data RedisRuntime = RedisRuntime
   { readPool :: !Redis.Connection,
     commandPool :: !Redis.Connection,
     stopped :: !(TVar Bool),
+    attached :: !(TVar Bool),
     options :: !RuntimeOptions
   }
 
-data AdapterError = InvalidOptions | InvalidStreamReply | CommandTimedOut | CommandRejected Redis.Reply
+-- | Configuration, attachment, and Redis command errors.
+data AdapterError
+  = -- | Configuration fails the adapter's option checks.
+    InvalidOptions
+  | -- | Redis returned a reply the adapter cannot interpret.
+    InvalidStreamReply
+  | -- | The command exceeded its configured timeout.
+    CommandTimedOut
+  | -- | Redis rejected the command. Inspect the raw reply programmatically.
+    CommandRejected Redis.Reply
+  | -- | A reader or group worker already reserved this runtime.
+    RuntimeAlreadyAttached
 
 -- Redis errors can quote keys or requests. Keep the raw reply available for
 -- programmatic inspection without including it in runner failure telemetry.
 instance Show AdapterError where
+  show RuntimeAlreadyAttached = "RuntimeAlreadyAttached"
   show InvalidOptions = "InvalidOptions"
   show InvalidStreamReply = "InvalidStreamReply"
   show CommandTimedOut = "CommandTimedOut"
@@ -64,6 +99,8 @@ instance Show AdapterError where
 
 instance Exception AdapterError
 
+-- | Bracket connection ownership around construction, processing, and finalizer drain.
+-- The runtime holds one dedicated blocking read connection.
 withRedisRuntime :: ConnectionSource -> RuntimeOptions -> (RedisRuntime -> IO a) -> IO a
 withRedisRuntime source opts use = do
   let info = case source of
@@ -86,11 +123,26 @@ withRedisRuntime source opts use = do
   owned (info {Redis.connectMaxConnections = 1, Redis.connectNumStripes = Just 1}) $ \readerPool ->
     withCommands $ \commands -> do
       closing <- newTVarIO False
-      let runtime = RedisRuntime readerPool commands closing opts
+      attachment <- newTVarIO False
+      let runtime = RedisRuntime readerPool commands closing attachment opts
       _ <- boundedRequest opts readerPool Redis.ping
       _ <- runCommand runtime Redis.ping
       use runtime
 
+-- Reserve a runtime before any constructor side effects. Failed initialization
+-- releases the reservation, including when the constructing thread is canceled.
+withRuntimeAttachment :: RedisRuntime -> IO a -> IO a
+withRuntimeAttachment runtime initialize = mask $ \restore -> do
+  acquired <- atomically $ do
+    alreadyAttached <- readTVar runtime.attached
+    if alreadyAttached
+      then pure False
+      else writeTVar runtime.attached True >> pure True
+  unless acquired (throwIO RuntimeAlreadyAttached)
+  restore initialize `onException` atomically (writeTVar runtime.attached False)
+
+-- | Stop accepting deliveries and wake a blocked read. Run graceful shutdown
+-- before exiting the runtime bracket so outstanding finalizers can finish.
 stopIntake :: RedisRuntime -> IO ()
 stopIntake runtime = atomically $ writeTVar runtime.stopped True
 

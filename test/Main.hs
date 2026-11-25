@@ -44,6 +44,7 @@ main = do
       withRedisRuntime pools defaultRuntimeOptions roundTrip
       withRedisRuntime pools defaultRuntimeOptions checkTelemetryDefaults
       withRedisRuntime pools defaultRuntimeOptions checkGroupTelemetryDefault
+      withRedisRuntime pools defaultRuntimeOptions checkSingleAttachment
       withRedisRuntime pools defaultRuntimeOptions $ \runtime ->
         withAsync (pollStream runtime (R.xreadOpts [("idle", "0-0")] (R.XReadOpts (Just 1200) (Just 1)))) $ \reader -> do
           -- Wait for Redis to confirm that the dedicated connection is blocked.
@@ -134,3 +135,19 @@ checkGroupTelemetryDefault runtime = do
   let config = rawGroupConfig "worker" (SourceIdentity "test" Nothing "defaults") "jobs" "solo" (CreateIfAbsent (EntryId 0 0))
   worker <- newGroupWorker @'[Tracing, IOE] runtime config
   check "group defaults to parent and link" (worker.groupAdapter.telemetry.traceCorrelation == ParentAndLink)
+
+checkSingleAttachment :: RedisRuntime -> IO ()
+checkSingleAttachment runtime = do
+  let source = SourceIdentity "test" Nothing "attach-once"
+      readerConfig = rawReaderConfig "reader" "index" source Earliest
+      groupConfig = rawGroupConfig "worker" source "missing" "solo" AttachExisting
+      newProjection = void (newReader @'[Tracing, IOE] runtime readerConfig)
+      newWorker = void (newGroupWorker @'[Tracing, IOE] runtime groupConfig)
+      assertAttached label action = do
+        result <- try @AdapterError action
+        check label (case result of Left RuntimeAlreadyAttached -> True; _ -> False)
+  missing <- try @GroupError newWorker
+  check "failed group initialization is reported" (case missing of Left GroupUnavailable -> True; _ -> False)
+  newProjection
+  assertAttached "runtime rejects a second independent reader" newProjection
+  assertAttached "runtime rejects a group worker after a reader" newWorker

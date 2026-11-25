@@ -43,7 +43,7 @@ Readers can start at `Earliest`, `After checkpoint`, or `Live`. A saved checkpoi
 
 Workers use explicit group creation or attachment and unique per-instance consumer names. Call the optional message lease's `leaseExtend` before a long-running handler becomes eligible for recovery. A stale finalizer cannot acknowledge or modify a newer attempt. A stale handler may still finish an external effect, so transactionally deduplicate effects that must apply once.
 
-The processor helpers set compatible Shibuya policies. Readers use strict serial processing, and workers use unordered processing up to the configured group capacity. A reader cannot supply a batch that waits for several unfinalized entries. Use separate runtimes for separate processors.
+The processor helpers set compatible Shibuya policies. Readers use strict serial processing, and workers use unordered processing up to the configured group capacity. A reader cannot supply a batch that waits for several unfinalized entries. Attach each processor to its own runtime. A second attachment fails with `RuntimeAlreadyAttached`. Import adapter constructors and configuration from `Shibuya.Adapter.Redis`. The `Internal` module exposes implementation helpers without a compatibility guarantee.
 
 For OpenTelemetry correlation, producers can write W3C `traceparent` and optional `tracestate` as stream fields. Readers default to `LinkOnly`, which starts a linked trace for each delivery. Group workers default to `ParentAndLink`, which joins the producer trace and also links to its span. Set the mode configuration’s `telemetry` field to override the policy or use its trace-context extractor to read a custom field convention. Rejections from a traced finalizer retain the consumer span’s W3C context.
 

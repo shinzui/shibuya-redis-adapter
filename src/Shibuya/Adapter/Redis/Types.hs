@@ -29,11 +29,17 @@ import GHC.Generics (Generic)
 import OpenTelemetry.Attributes (toAttribute)
 import Shibuya (Cursor (..), DeadLetterReason, Envelope (..), Headers, MessageId (..), TraceHeaders, mkEnvelope)
 
-data EntryId = EntryId !Word64 !Word64 deriving stock (Eq, Ord, Show, Generic)
+-- | A Redis stream position ordered by milliseconds and sequence number.
+data EntryId
+  = -- | Milliseconds component followed by the sequence component.
+    EntryId !Word64 !Word64
+  deriving stock (Eq, Ord, Show, Generic)
 
+-- | Render an entry ID as canonical Redis decimal milliseconds-sequence bytes.
 renderEntryId :: EntryId -> ByteString
 renderEntryId (EntryId ms seqNo) = C8.pack (show ms <> "-" <> show seqNo)
 
+-- | Parse a canonical Redis ID with two unsigned 64-bit components.
 parseEntryId :: ByteString -> Maybe EntryId
 parseEntryId input = case C8.split '-' input of
   [ms, seqNo] -> EntryId <$> component ms <*> component seqNo
@@ -45,16 +51,24 @@ parseEntryId input = case C8.split '-' input of
         then Just (fromInteger n)
         else Nothing
 
+-- | Identify a logical stream across its deliveries.
 data SourceIdentity = SourceIdentity
-  { namespace :: !ByteString,
+  { -- | Application scope that distinguishes streams with otherwise identical identities.
+    namespace :: !ByteString,
+    -- | Optional producer generation. Change it when a recreated stream has a new identity.
     generation :: !(Maybe ByteString),
+    -- | Binary Redis key of the stream.
     streamKey :: !ByteString
   }
   deriving stock (Eq, Show, Generic)
 
+-- | A Redis stream entry with its original binary data.
 data RedisEntry = RedisEntry
-  { sourceIdentity :: !SourceIdentity,
+  { -- | Logical source of the entry.
+    sourceIdentity :: !SourceIdentity,
+    -- | Redis position and backend-native entry ID.
     entryId :: !EntryId,
+    -- | Field/value pairs in stream order, including duplicate names.
     fields :: ![(ByteString, ByteString)]
   }
   deriving stock (Eq, Show, Generic)
@@ -103,17 +117,28 @@ decodeEnvelope decode selectHeaders selectTrace entry = case decode entry of
   Left reason -> Left (DecodeFailure entry reason)
   Right value -> Right ((value <$ entryEnvelope entry) {headers = selectHeaders entry, traceContext = selectTrace entry})
 
+-- | Observations emitted during reads, finalization and recovery.
 data AdapterEvent
-  = Delivered
-  | Acknowledged
-  | Retried
-  | Reclaimed
-  | Superseded
-  | DeadLettered
-  | CheckpointFailed
-  | HistoryGap
-  | PendingPayloadMissing
-  | PendingSample !Integer !(Maybe Integer)
+  = -- | An entry was admitted to the runner.
+    Delivered
+  | -- | A successful decision advanced the cursor or acknowledged the entry.
+    Acknowledged
+  | -- | A later attempt was scheduled.
+    Retried
+  | -- | A worker claimed a pending entry.
+    Reclaimed
+  | -- | An attempt lost its Redis ownership fence.
+    Superseded
+  | -- | The dead-letter write completed, including an idempotent replay.
+    DeadLettered
+  | -- | An application checkpoint save failed.
+    CheckpointFailed
+  | -- | A reader detected a discontinuity in history.
+    HistoryGap
+  | -- | A pending entry no longer has a stream payload.
+    PendingPayloadMissing
+  | -- | Total pending entries and the optional maximum idle age of the page in milliseconds.
+    PendingSample !Integer !(Maybe Integer)
   deriving stock (Eq, Show)
 
 groupStatePrefix :: ByteString

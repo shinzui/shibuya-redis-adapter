@@ -33,41 +33,75 @@ import Shibuya.Adapter.Redis.Types
 import Shibuya.Telemetry.Propagation (currentTraceHeaders)
 import Streamly.Data.Stream qualified as Stream
 
+-- | Last completed entry and optional producer-supplied continuity evidence.
 data Checkpoint = Checkpoint
-  { position :: !EntryId,
+  { -- | Cursor used to resume strictly after this entry.
+    position :: !EntryId,
+    -- | Opaque producer evidence persisted with the cursor.
     continuity :: !(Maybe ByteString)
   }
   deriving stock (Eq, Show)
 
--- | A conditional save must accept an identical already-committed update.
--- Load and save receive the same logical reader and source identity.
+-- | Application-owned checkpoint persistence. A conditional save must accept
+-- an identical already-committed update. Both callbacks receive the same
+-- logical reader name and source identity.
 data CheckpointStore = CheckpointStore
-  { loadCheckpoint :: ByteString -> SourceIdentity -> IO (Maybe Checkpoint),
+  { -- | Load the reader’s durable completed cursor, if present.
+    loadCheckpoint :: ByteString -> SourceIdentity -> IO (Maybe Checkpoint),
+    -- | Save the next completed cursor given the expected previous value.
+    -- The previous value is absent when writing the start boundary.
     saveCheckpoint :: ByteString -> SourceIdentity -> Maybe Checkpoint -> Checkpoint -> IO ()
   }
 
-data ReaderStart = Earliest | After !Checkpoint | Live
+-- | Initial position when the checkpoint store has no saved cursor.
+data ReaderStart
+  = -- | Deliver every retained entry starting at the first.
+    Earliest
+  | -- | Deliver entries strictly after the supplied checkpoint.
+    After !Checkpoint
+  | -- | Start after the stream’s current tail.
+    Live
   deriving stock (Eq, Show)
 
-data GapEvidence = StreamRolledBack !(Maybe EntryId) | ProducerDiscontinuity !Text
+-- | Evidence that previously completed history may no longer match the stream.
+data GapEvidence
+  = -- | Redis’s tail moved behind the checkpoint. A missing tail denotes an absent stream.
+    StreamRolledBack !(Maybe EntryId)
+  | -- | The application’s continuity callback reported a discontinuity.
+    ProducerDiscontinuity !Text
   deriving stock (Eq, Show)
 
+-- | Information passed to the application when the reader detects a gap.
 data ReaderGap = ReaderGap
-  { gapSource :: !SourceIdentity,
+  { -- | Logical source whose history changed.
+    gapSource :: !SourceIdentity,
+    -- | Completed checkpoint before the gap.
     lastCheckpoint :: !Checkpoint,
+    -- | Candidate next entry when the gap was detected during delivery.
     nextEntry :: !(Maybe EntryId),
+    -- | Evidence that triggered the gap callback.
     gapEvidence :: !GapEvidence
   }
   deriving stock (Eq, Show)
 
--- | Resnapshot stops this reader so the application can construct a new one.
-data GapAction = StopAndRebuild | Resnapshot | BestEffort
+-- | Choose how a reader responds to a detected history gap.
+data GapAction
+  = -- | Stop and leave reconstruction to the application.
+    StopAndRebuild
+  | -- | Stop so the application can resnapshot and construct a fresh reader.
+    Resnapshot
+  | -- | Accept the discontinuity and keep reading.
+    BestEffort
   deriving stock (Eq, Show)
 
+-- | Terminal failures specific to an independent reader.
 data ReaderError
-  = ReaderHistoryLost !ReaderGap !GapAction
-  | ReaderRejectionWithoutDestination !EntryId
-  | ReaderRetryLimit !EntryId
+  = -- | A detected gap and the application's terminal disposition.
+    ReaderHistoryLost !ReaderGap !GapAction
+  | -- | The entry requires rejection but no destination is configured.
+    ReaderRejectionWithoutDestination !EntryId
+  | -- | The entry exhausted its retries without a dead-letter destination.
+    ReaderRetryLimit !EntryId
   deriving anyclass (Exception)
 
 instance Show ReaderError where
@@ -75,48 +109,68 @@ instance Show ReaderError where
   show (ReaderRejectionWithoutDestination position) = "ReaderRejectionWithoutDestination " <> show position
   show (ReaderRetryLimit position) = "ReaderRetryLimit " <> show position
 
+-- | Configuration of one ordered independent reader. 'rawReaderConfig'
+-- supplies the defaults for a raw payload.
 data ReaderConfig a = ReaderConfig
-  { readerName :: !Text,
+  { -- | Display name passed to Shibuya. Supplied by the caller.
+    readerAdapterName :: !Text,
+    -- | Logical name for checkpoints and dead-letter records. Supplied by the caller.
     readerIdentity :: !ByteString,
+    -- | Namespace, generation and Redis key. Supplied by the caller.
     readerSource :: !SourceIdentity,
+    -- | Position when no checkpoint is saved. Supplied by the caller.
     readerStart :: !ReaderStart,
+    -- | Optional durable checkpoint storage. Defaults to an in-memory checkpoint.
     checkpointStore :: !(Maybe CheckpointStore),
+    -- | Decode the entry or return a permanent failure. Defaults to the raw entry.
     readerDecode :: RedisEntry -> Either DeadLetterReason a,
+    -- | Extract application headers. Defaults to no application headers.
     readerHeaders :: RedisEntry -> Maybe Headers,
+    -- | Extract incoming W3C context. Defaults to 'defaultTraceContext'.
     readerTraceContext :: RedisEntry -> Maybe TraceHeaders,
+    -- | Shibuya tracing settings. Defaults to 'LinkOnly' correlation.
     telemetry :: !AdapterTelemetry,
-    -- Return the evidence to save with this entry and report a discontinuity
-    -- separately. BestEffort accepts the returned evidence even on a gap.
+    -- | Evidence to save with this entry and an optional discontinuity message.
+    -- Defaults to neither. 'BestEffort' accepts the evidence even on a gap.
     checkContinuity :: Checkpoint -> RedisEntry -> (Maybe ByteString, Maybe Text),
+    -- | Respond to a history gap. Defaults to 'StopAndRebuild'.
     onReaderGap :: ReaderGap -> IO GapAction,
+    -- | Redis hash for rejected entries. Defaults to no destination.
     readerDeadLetters :: !(Maybe ByteString),
+    -- | Maximum retries after the first delivery. Defaults to 10.
     readerRetryLimit :: !Int
   }
 
+-- | Configure a reader that delivers raw entries. Arguments are the adapter
+-- name, logical reader name, source identity, and start position.
 rawReaderConfig :: Text -> ByteString -> SourceIdentity -> ReaderStart -> ReaderConfig RedisEntry
 rawReaderConfig name identity src start =
   ReaderConfig
-    name
-    identity
-    src
-    start
-    Nothing
-    Right
-    (const Nothing)
-    defaultTraceContext
-    (defaultAdapterTelemetry {traceCorrelation = LinkOnly})
-    (\_ _ -> (Nothing, Nothing))
-    (const (pure StopAndRebuild))
-    Nothing
-    10
+    { readerAdapterName = name,
+      readerIdentity = identity,
+      readerSource = src,
+      readerStart = start,
+      checkpointStore = Nothing,
+      readerDecode = Right,
+      readerHeaders = const Nothing,
+      readerTraceContext = defaultTraceContext,
+      telemetry = defaultAdapterTelemetry {traceCorrelation = LinkOnly},
+      checkContinuity = \_ _ -> (Nothing, Nothing),
+      onReaderGap = const (pure StopAndRebuild),
+      readerDeadLetters = Nothing,
+      readerRetryLimit = 10
+    }
 
+-- | An attached reader and access to its progress.
 data Reader es a = Reader
-  { readerAdapter :: !(Adapter es a),
+  { -- | Shibuya adapter for advanced runner integration.
+    readerAdapter :: !(Adapter es a),
+    -- | Read the latest completed checkpoint.
     completedCheckpoint :: IO Checkpoint
   }
 
--- | Use the standard one-at-a-time Shibuya processor. A batch that waits for
--- multiple entries is incompatible with the adapter's single outstanding entry.
+-- | Run one delivery at a time in stream order. Batches that wait for several
+-- outstanding entries cannot use the single-entry reader.
 readerProcessor :: Reader es a -> Handler es a -> QueueProcessor es
 readerProcessor reader handler = QueueProcessor reader.readerAdapter handler StrictInOrder Serial
 
@@ -136,112 +190,113 @@ newReader runtime cfg = do
         || any (groupStatePrefix `BS.isPrefixOf`) cfg.readerDeadLetters
     )
     (throwIO InvalidOptions)
-  loaded <- maybe (pure Nothing) (\store -> store.loadCheckpoint cfg.readerIdentity src) cfg.checkpointStore
-  initial <- case loaded of
-    Just saved -> pure saved
-    Nothing -> do
-      boundary <- case cfg.readerStart of
-        Earliest -> pure origin
-        After checkpoint -> pure checkpoint
-        Live -> do
-          tailId <- streamTail runtime src
-          pure (Checkpoint (maybe origin.position id tailId) Nothing)
-      save Nothing boundary
-      pure boundary
-  completed <- newIORef initial
-  let commit previous next = do
-        save (Just previous) next
-        writeIORef completed next
+  withRuntimeAttachment runtime $ do
+    loaded <- maybe (pure Nothing) (\store -> store.loadCheckpoint cfg.readerIdentity src) cfg.checkpointStore
+    initial <- case loaded of
+      Just saved -> pure saved
+      Nothing -> do
+        boundary <- case cfg.readerStart of
+          Earliest -> pure origin
+          After checkpoint -> pure checkpoint
+          Live -> do
+            tailId <- streamTail runtime src
+            pure (Checkpoint (maybe origin.position id tailId) Nothing)
+        save Nothing boundary
+        pure boundary
+    completed <- newIORef initial
+    let commit previous next = do
+          save (Just previous) next
+          writeIORef completed next
 
-      reportGap previous entry evidence = do
-        let gap = ReaderGap src previous entry evidence
-        emit HistoryGap
-        disposition <- cfg.onReaderGap gap
-        unless (disposition == BestEffort) (throwIO (ReaderHistoryLost gap disposition))
+        reportGap previous entry evidence = do
+          let gap = ReaderGap src previous entry evidence
+          emit HistoryGap
+          disposition <- cfg.onReaderGap gap
+          unless (disposition == BestEffort) (throwIO (ReaderHistoryLost gap disposition))
 
-      pull state = do
-        stopped <- readTVarIO runtime.stopped
-        if stopped
-          then pure Nothing
-          else case state of
-            Ready [] -> do
-              previous <- readIORef completed
-              tailId <- streamTail runtime src
-              boundary <-
-                if maybe origin.position id tailId < previous.position
-                  then do
-                    reportGap previous Nothing (StreamRolledBack tailId)
-                    commit previous origin
-                    pure origin
-                  else pure previous
-              batch <- pollStream runtime (Redis.xreadOpts [(src.streamKey, renderEntryId boundary.position)] (readBatchOptions runtime))
-              case batch of
-                Nothing -> pure Nothing
-                Just rows -> streamEntries src rows >>= pull . Ready
-            Ready (entry : rest) -> do
-              previous <- readIORef completed
-              let (evidence, problem) = cfg.checkContinuity previous entry
-                  next = Checkpoint entry.entryId evidence
-              mapM_ (reportGap previous (Just entry.entryId) . ProducerDiscontinuity) problem
-              deliver previous next entry 0 rest
-            Await result entry next attempt rest -> do
-              outcome <- atomically $ (Just <$> readTMVar result) `orElse` (readTVar runtime.stopped >>= check >> pure Nothing)
-              case outcome of
-                Nothing -> pure Nothing
-                Just Advance -> pull (Ready rest)
-                Just (RepeatAfter micros) -> do
-                  waited <- race (atomically (readTVar runtime.stopped >>= check)) (threadDelay micros)
-                  case waited of
-                    Left () -> pure Nothing
-                    Right () -> do
-                      previous <- readIORef completed
-                      deliver previous next entry (attempt + 1) rest
+        pull state = do
+          stopped <- readTVarIO runtime.stopped
+          if stopped
+            then pure Nothing
+            else case state of
+              Ready [] -> do
+                previous <- readIORef completed
+                tailId <- streamTail runtime src
+                boundary <-
+                  if maybe origin.position id tailId < previous.position
+                    then do
+                      reportGap previous Nothing (StreamRolledBack tailId)
+                      commit previous origin
+                      pure origin
+                    else pure previous
+                batch <- pollStream runtime (Redis.xreadOpts [(src.streamKey, renderEntryId boundary.position)] (readBatchOptions runtime))
+                case batch of
+                  Nothing -> pure Nothing
+                  Just rows -> streamEntries src rows >>= pull . Ready
+              Ready (entry : rest) -> do
+                previous <- readIORef completed
+                let (evidence, problem) = cfg.checkContinuity previous entry
+                    next = Checkpoint entry.entryId evidence
+                mapM_ (reportGap previous (Just entry.entryId) . ProducerDiscontinuity) problem
+                deliver previous next entry 0 rest
+              Await result entry next attempt rest -> do
+                outcome <- atomically $ (Just <$> readTMVar result) `orElse` (readTVar runtime.stopped >>= check >> pure Nothing)
+                case outcome of
+                  Nothing -> pure Nothing
+                  Just Advance -> pull (Ready rest)
+                  Just (RepeatAfter micros) -> do
+                    waited <- race (atomically (readTVar runtime.stopped >>= check)) (threadDelay micros)
+                    case waited of
+                      Left () -> pure Nothing
+                      Right () -> do
+                        previous <- readIORef completed
+                        deliver previous next entry (attempt + 1) rest
 
-      deliver previous next entry attempt rest = do
-        gate <- newEmptyTMVarIO
-        let complete = commit previous next
-            reject reason headers = case cfg.readerDeadLetters of
-              Nothing -> throwIO (ReaderRejectionWithoutDestination entry.entryId)
-              Just key -> do
-                _ <- retryConnection runtime $ runCommand runtime $ storeRejection key (LogicalReader cfg.readerIdentity) entry reason headers
-                emit DeadLettered
-                complete
-            finalize headers decision = mask $ \restore -> do
-              unfinalized <- atomically (isEmptyTMVar gate)
-              when unfinalized $ case decision of
-                AckOk -> do
-                  restore complete
-                  atomically (putTMVar gate Advance)
-                  emit Acknowledged
-                AckDeadLetter reason -> do
-                  restore (reject reason headers)
-                  atomically (putTMVar gate Advance)
-                AckRetry (RetryDelay delay)
-                  | attempt == cfg.readerRetryLimit -> case cfg.readerDeadLetters of
-                      Nothing -> throwIO (ReaderRetryLimit entry.entryId)
-                      Just _ -> do
-                        restore (reject MaxRetriesExceeded headers)
-                        atomically (putTMVar gate Advance)
-                  | otherwise -> do
-                      let micros = max 0 (min (toInteger (maxBound :: Int)) (ceiling (delay * 1000000)))
-                      atomically (putTMVar gate (RepeatAfter (fromInteger micros)))
-                      emit Retried
-                AckHalt _ -> stopIntake runtime
-        case decodeEnvelope cfg.readerDecode cfg.readerHeaders cfg.readerTraceContext entry of
-          Left (DecodeFailure _ reason) -> reject reason Nothing >> pull (Ready rest)
-          Right envelope -> do
-            emit Delivered
-            let finish decision = do
-                  headers <- case decision of
-                    AckDeadLetter _ -> currentTraceHeaders
-                    AckRetry _ | attempt == cfg.readerRetryLimit -> currentTraceHeaders
-                    _ -> pure Nothing
-                  liftIO (finalize headers decision)
-                delivery = mkIngested (envelope {attempt = Just (Attempt (fromIntegral attempt))}) (AckHandle finish)
-            pure (Just (delivery, Await gate entry next attempt rest))
+        deliver previous next entry attempt rest = do
+          gate <- newEmptyTMVarIO
+          let complete = commit previous next
+              reject reason headers = case cfg.readerDeadLetters of
+                Nothing -> throwIO (ReaderRejectionWithoutDestination entry.entryId)
+                Just key -> do
+                  _ <- retryConnection runtime $ runCommand runtime $ storeRejection key (LogicalReader cfg.readerIdentity) entry reason headers
+                  emit DeadLettered
+                  complete
+              finalize headers decision = mask $ \restore -> do
+                unfinalized <- atomically (isEmptyTMVar gate)
+                when unfinalized $ case decision of
+                  AckOk -> do
+                    restore complete
+                    atomically (putTMVar gate Advance)
+                    emit Acknowledged
+                  AckDeadLetter reason -> do
+                    restore (reject reason headers)
+                    atomically (putTMVar gate Advance)
+                  AckRetry (RetryDelay delay)
+                    | attempt == cfg.readerRetryLimit -> case cfg.readerDeadLetters of
+                        Nothing -> throwIO (ReaderRetryLimit entry.entryId)
+                        Just _ -> do
+                          restore (reject MaxRetriesExceeded headers)
+                          atomically (putTMVar gate Advance)
+                    | otherwise -> do
+                        let micros = max 0 (min (toInteger (maxBound :: Int)) (ceiling (delay * 1000000)))
+                        atomically (putTMVar gate (RepeatAfter (fromInteger micros)))
+                        emit Retried
+                  AckHalt _ -> stopIntake runtime
+          case decodeEnvelope cfg.readerDecode cfg.readerHeaders cfg.readerTraceContext entry of
+            Left (DecodeFailure _ reason) -> reject reason Nothing >> pull (Ready rest)
+            Right envelope -> do
+              emit Delivered
+              let finish decision = do
+                    headers <- case decision of
+                      AckDeadLetter _ -> currentTraceHeaders
+                      AckRetry _ | attempt == cfg.readerRetryLimit -> currentTraceHeaders
+                      _ -> pure Nothing
+                    liftIO (finalize headers decision)
+                  delivery = mkIngested (envelope {attempt = Just (Attempt (fromIntegral attempt))}) (AckHandle finish)
+              pure (Just (delivery, Await gate entry next attempt rest))
 
-  let deliveries = Stream.unfoldrM (liftIO . pull) (Ready [])
-  pure (Reader (mkRedisAdapter runtime cfg.readerName cfg.telemetry deliveries) (readIORef completed))
+    let deliveries = Stream.unfoldrM (liftIO . pull) (Ready [])
+    pure (Reader (mkRedisAdapter runtime cfg.readerAdapterName cfg.telemetry deliveries) (readIORef completed))
   where
     src = cfg.readerSource
     origin = Checkpoint (EntryId 0 0) Nothing

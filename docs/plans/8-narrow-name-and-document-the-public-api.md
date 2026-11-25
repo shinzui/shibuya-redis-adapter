@@ -37,9 +37,9 @@ Once a library is published, every name it exports is a promise. Today the singl
 
 
 - [x] M1. Internals are exported from `Shibuya.Adapter.Redis.Internal`; the facade has a sectioned export list; every module has an explicit export list and builds under the stricter warning set. Verified 2026-11-25. The build emitted no GHC warnings, and a scratch import of runCommand failed from the facade and compiled from Internal.
-- [ ] M2. `readerName` is renamed `readerAdapterName`; the default configurations are built with named fields; the facade re-exports Shibuya's telemetry types.
-- [ ] M3. Attaching a second reader or worker to a runtime throws `RuntimeAlreadyAttached`, proven by a test.
-- [ ] M4. Every export of the facade has Haddock documentation and the module header explains lifecycle, decisions and retry semantics; a new ADR records the public/internal boundary.
+- [x] M2. `readerName` is renamed `readerAdapterName`; the default configurations are built with named fields; the facade re-exports Shibuya's telemetry types. Verified 2026-11-25. The named defaults and telemetry override are covered by runner-fixture. Both examples delivered and resumed in a private Redis run.
+- [x] M3. Attaching a second reader or worker to a runtime throws `RuntimeAlreadyAttached`, proven by a test. Verified 2026-11-25. The fixture verifies failed initialization releases the reservation, and a successful reader rejects a second reader and a worker.
+- [x] M4. Every export of the facade has Haddock documentation and the module header explains lifecycle, decisions and retry semantics; a new ADR records the public/internal boundary. Verified 2026-11-25. Haddock reports 100% (47/47) for the facade and all five suites pass.
 
 
 ## Surprises & Discoveries
@@ -63,7 +63,7 @@ Once a library is published, every name it exports is a promise. Today the singl
 ## Outcomes & Retrospective
 
 
-(To be filled during and after implementation.)
+The facade now documents its lifecycle, policies, configuration and public exports. The import probe confirmed that command plumbing is available through Internal. The attachment regression verified both the one-processor rule and recovery after a failed constructor. Haddock generated the public pages and reported 47 of 47 items documented. It reported unresolved links to some derived Generic representations and missing external documentation for two transitive dependencies.
 
 
 ## Context and Orientation
