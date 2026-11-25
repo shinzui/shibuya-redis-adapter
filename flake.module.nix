@@ -35,7 +35,9 @@
                 }
                 { };
             });
-          shibuya-redis-adapter = pkgs.haskell.lib.addTestToolDepend prev.shibuya-redis-adapter pkgs.redis;
+          shibuya-redis-adapter = pkgs.haskell.lib.addTestToolDepend
+            (pkgs.haskell.lib.enableCabalFlag prev.shibuya-redis-adapter "examples")
+            pkgs.redis;
         })
       ];
     };

@@ -11,6 +11,12 @@ provenance:
     model: "claude-fable-5-2"
     harness: "claude-code"
     at: 2026-11-25T13:50:20Z
+  revisions:
+    - model: "gpt-6.2-sol"
+      harness: "codex-cli"
+      at: 2026-11-25T14:28:00Z
+      mode: "implement"
+      note: "Prepare and qualify the Cabal release candidate"
 ---
 
 # Package and qualify the 0.1.0.0 release
@@ -30,10 +36,10 @@ This plan makes the package acceptable to Hackage and produces the evidence that
 ## Progress
 
 
-- [ ] M1. `cabal check` passes: license and `LICENSE` file, changelog, metadata, source repository, and upper bounds on every dependency including the required `effectful-core` range.
-- [ ] M2. The two example programs build only when a Cabal flag is on; the README's commands still work in the development shell.
-- [ ] M3. `README.md` and `docs/compatibility.md` describe the final behavior, permissions and telemetry.
-- [ ] M4. All suites pass on Redis 7.2.17 and 8.10.1; the unpacked source archive builds and its Haddock generates; `nix flake check` passes; results are recorded in `docs/compatibility.md`.
+- [x] M1. `cabal check` passes: license and `LICENSE` file, changelog, metadata, source repository, and upper bounds on every dependency including the required `effectful-core` range. Verified 2026-11-25. Cabal reported no errors or warnings, and Mori validated the dependency metadata.
+- [x] M2. The two example programs build only when a Cabal flag is on; the README's commands still work in the development shell. Verified 2026-11-25. The unpacked archive defaults to the library and builds both binaries when enabled. The repository examples ran twice and the Nix package installed both binaries.
+- [x] M3. `README.md` and `docs/compatibility.md` describe the final behavior, permissions and telemetry. Verified 2026-11-25. Both guides document the retry and tracing semantics, and the compatibility guide records ACLs and the qualified builds.
+- [x] M4. All suites pass on Redis 7.2.17 and 8.10.1; the unpacked source archive builds and its Haddock generates; `nix flake check` passes; results are recorded in `docs/compatibility.md`. Verified 2026-11-25. Five suites passed on each Redis build. The archive built and generated Haddock, Nix checks passed, and the Nix package passed all five suites.
 
 
 ## Surprises & Discoveries
@@ -57,7 +63,9 @@ This plan makes the package acceptable to Hackage and produces the evidence that
 ## Outcomes & Retrospective
 
 
-(To be filled during and after implementation.)
+Version 0.1.0.0 qualified on Apple Silicon with GHC 9.12.4. The [compatibility guide](../compatibility.md) records the Redis build IDs, archive build and Nix verification. Both examples delivered `1-0` and resumed at `2-0`.
+
+The final package sent OTLP to the global Jaeger instance. The worker shared trace `7f3ef0c4ce116b172f3b4fbe87dfd705` with producer span `e6faf9081133dd7b`. The reader used trace `94687d77803c40e7234f02094018c1ed` with a reference to the same producer. Both consumer spans set `messaging.system=redis` and contained native Redis message and entry ID tags equal to `1-0`.
 
 
 ## Context and Orientation

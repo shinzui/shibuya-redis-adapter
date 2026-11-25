@@ -1,1 +1,4 @@
 packages: .
+
+package shibuya-redis-adapter
+  flags: +examples

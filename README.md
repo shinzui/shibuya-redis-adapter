@@ -11,6 +11,8 @@ Both constructors accept a raw binary entry or a typed decoder. They preserve fi
 
 ## Run both examples
 
+The package builds its library by default. The repository's `cabal.project` and Nix build enable the `examples` flag. Use `-fexamples` when building from the source archive.
+
 Start the project-local Redis service in one terminal. Stop it with Ctrl-C after the demo.
 
 ```sh
@@ -41,7 +43,9 @@ Use `withRedisRuntime` around processor construction, `runApp`, and the complete
 
 Readers can start at `Earliest`, `After checkpoint`, or `Live`. A saved checkpoint takes precedence. Store the completed ID and any producer continuity evidence together under the reader's logical name and source identity. When attaching after a snapshot, pass the snapshot cursor and evidence to `After`, then check the next entry's generation or predecessor with `checkContinuity`. Use `onReaderGap` to stop, request a resnapshot, or accept the discontinuity explicitly.
 
-Workers use explicit group creation or attachment and unique per-instance consumer names. Call the optional message lease's `leaseExtend` before a long-running handler becomes eligible for recovery. A stale finalizer cannot acknowledge or modify a newer attempt. A stale handler may still finish an external effect, so transactionally deduplicate effects that must apply once.
+Workers use explicit group creation or attachment and unique per-instance consumer names. Call the optional message lease's `leaseExtend` before a long-running handler becomes eligible for recovery. A worker can reclaim its own retried entry after the requested delay. A stale finalizer cannot acknowledge or modify a newer attempt. A stale handler may still finish an external effect, so transactionally deduplicate effects that must apply once.
+
+On retry exhaustion, either mode writes a `MaxRetriesExceeded` record and advances when a dead-letter hash is configured. Without a hash, the processor stops with the reader checkpoint before the entry or the worker entry still pending.
 
 The processor helpers set compatible Shibuya policies. Readers use strict serial processing, and workers use unordered processing up to the configured group capacity. A reader cannot supply a batch that waits for several unfinalized entries. Attach each processor to its own runtime. A second attachment fails with `RuntimeAlreadyAttached`. Import adapter constructors and configuration from `Shibuya.Adapter.Redis`. The `Internal` module exposes implementation helpers without a compatibility guarantee.
 

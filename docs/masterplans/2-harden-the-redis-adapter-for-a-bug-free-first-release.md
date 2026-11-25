@@ -93,7 +93,7 @@ The adapter-author guidance for tracing is `docs/user/opentelemetry.md` in the s
 | 6 | Dead-letter exhausted reader retries and retry reader rejection writes | [docs/plans/6-dead-letter-exhausted-reader-retries-and-retry-reader-rejection-writes.md](../plans/6-dead-letter-exhausted-reader-retries-and-retry-reader-rejection-writes.md) | None | None | Complete |
 | 7 | Propagate trace context and Redis span attributes | [docs/plans/7-propagate-trace-context-and-redis-span-attributes.md](../plans/7-propagate-trace-context-and-redis-span-attributes.md) | None | EP-5, EP-6 | Complete |
 | 8 | Narrow, name and document the public API | [docs/plans/8-narrow-name-and-document-the-public-api.md](../plans/8-narrow-name-and-document-the-public-api.md) | EP-5, EP-6, EP-7 | None | Complete |
-| 9 | Package and qualify the 0.1.0.0 release | [docs/plans/9-package-and-qualify-the-0-1-0-0-release.md](../plans/9-package-and-qualify-the-0-1-0-0-release.md) | EP-8 | None | Not Started |
+| 9 | Package and qualify the 0.1.0.0 release | [docs/plans/9-package-and-qualify-the-0-1-0-0-release.md](../plans/9-package-and-qualify-the-0-1-0-0-release.md) | EP-8 | None | Complete |
 
 Row numbers equal the plan file numbers, so EP-5 is plan 5.
 
@@ -133,7 +133,7 @@ Decisions that should become or amend ADRs: retry eligibility no longer requires
 ## Progress
 
 
-EP-5 through EP-7 are complete. Both modes exported correlated spans to global Jaeger, and all five suites passed on Redis 8.10.1. EP-8 is complete with full facade Haddock coverage and both examples verified. EP-9 is next. The final acceptance gate, owned by EP-9, is all test suites passing on Redis 7.2.17 and 8.10.1 with `cabal check` clean.
+All five child plans are complete. The release candidate passed all five suites on Redis 7.2.17 and 8.10.1. Cabal check, source-archive build, Haddock, Nix checks and the global Jaeger trace check are complete.
 
 
 ## Surprises & Discoveries
@@ -161,4 +161,4 @@ The review reproduced finding 1 directly against Redis 8.10.1 by running the scr
 ## Outcomes & Retrospective
 
 
-(To be filled during and after implementation.)
+The adapter now redelivers a worker’s own retries and records exhausted retries before advancing when configured to dead-letter. The reader recovers its rejection write after a dropped command connection, while worker finalizers remain fenced across takeover. Both modes propagate producer context and record the consumer context on traced rejections. The facade has complete Haddock coverage and enforces one processor per runtime. Version 0.1.0.0 passed the [release matrix](../compatibility.md) and the [global Jaeger check](../plans/9-package-and-qualify-the-0-1-0-0-release.md#outcomes--retrospective).

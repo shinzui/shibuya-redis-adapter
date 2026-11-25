@@ -75,6 +75,10 @@ in  Schema.Project::{
           , Schema.Dependency.ByName "haskell/stm:stm"
           , Schema.Dependency.ByName "haskell/bytestring:bytestring"
           , Schema.Dependency.ByName "haskell/text:text"
+          , pinned "iand675/hs-opentelemetry:hs-opentelemetry-api" "^>=1.0"
+          , pinned "unordered-containers" "^>=0.2"
+          , testOnly "iand675/hs-opentelemetry:hs-opentelemetry-exporter-in-memory"
+          , testOnly "iand675/hs-opentelemetry:hs-opentelemetry-sdk"
           , testOnly "haskell/process:process"
           ]
         }
@@ -88,6 +92,10 @@ in  Schema.Project::{
       , "haskell/stm:stm"
       , "haskell/bytestring:bytestring"
       , "haskell/text:text"
+      , "iand675/hs-opentelemetry:hs-opentelemetry-api"
+      , "unordered-containers"
+      , "iand675/hs-opentelemetry:hs-opentelemetry-exporter-in-memory"
+      , "iand675/hs-opentelemetry:hs-opentelemetry-sdk"
       , "haskell/process:process"
       ]
     , dependencyRefs =
@@ -99,6 +107,9 @@ in  Schema.Project::{
       , pkgRef "haskell" "stm" "stm"
       , pkgRef "haskell" "bytestring" "bytestring"
       , pkgRef "haskell" "text" "text"
+      , pkgRef "iand675" "hs-opentelemetry" "hs-opentelemetry-api"
+      , pkgRef "iand675" "hs-opentelemetry" "hs-opentelemetry-exporter-in-memory"
+      , pkgRef "iand675" "hs-opentelemetry" "hs-opentelemetry-sdk"
       , pkgRef "haskell" "process" "process"
       ]
     , agents =
