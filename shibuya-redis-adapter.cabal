@@ -1,0 +1,55 @@
+cabal-version: 3.12
+name: shibuya-redis-adapter
+version: 0.1.0.0
+synopsis: Redis Streams adapter for Shibuya
+build-type: Simple
+extra-source-files: docs/initial-spec.md
+
+common shared
+  default-language: GHC2024
+  default-extensions:
+    DeriveAnyClass
+    DuplicateRecordFields
+    OverloadedLabels
+    OverloadedRecordDot
+    OverloadedStrings
+
+  ghc-options: -Wall
+  build-depends:
+    base >=4.21 && <5,
+    bytestring,
+    hedis ^>=0.16.4,
+    shibuya-core ^>=0.13.0.1,
+    text,
+
+library
+  import: shared
+  hs-source-dirs: src
+  exposed-modules: Shibuya.Adapter.Redis
+  other-modules:
+    Shibuya.Adapter.Redis.Connection
+    Shibuya.Adapter.Redis.DeadLetter
+    Shibuya.Adapter.Redis.Types
+
+  build-depends:
+    async,
+    effectful-core,
+    stm,
+    streamly-core,
+
+test-suite runner-fixture
+  import: shared
+  type: exitcode-stdio-1.0
+  main-is: Main.hs
+  other-modules: Fixture
+  hs-source-dirs: test
+  ghc-options: -threaded
+  build-depends:
+    async,
+    directory,
+    effectful-core,
+    filepath,
+    process,
+    shibuya-redis-adapter,
+    streamly-core,
+    temporary,
