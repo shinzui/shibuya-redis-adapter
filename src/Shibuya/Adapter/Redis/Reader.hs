@@ -184,8 +184,8 @@ newReader runtime cfg = do
             reject reason = case cfg.readerDeadLetters of
               Nothing -> throwIO (ReaderRejectionWithoutDestination entry.entryId)
               Just key -> do
-                inserted <- runCommand runtime $ storeRejection key (LogicalReader cfg.readerIdentity) entry reason
-                when inserted (emit DeadLettered)
+                _ <- retryConnection runtime $ runCommand runtime $ storeRejection key (LogicalReader cfg.readerIdentity) entry reason
+                emit DeadLettered
                 complete
             finalize decision = mask $ \restore -> do
               unfinalized <- atomically (isEmptyTMVar gate)
@@ -197,11 +197,16 @@ newReader runtime cfg = do
                 AckDeadLetter reason -> do
                   restore (reject reason)
                   atomically (putTMVar gate Advance)
-                AckRetry (RetryDelay delay) -> do
-                  when (attempt == cfg.readerRetryLimit) (throwIO (ReaderRetryLimit entry.entryId))
-                  let micros = max 0 (min (toInteger (maxBound :: Int)) (ceiling (delay * 1000000)))
-                  atomically (putTMVar gate (RepeatAfter (fromInteger micros)))
-                  emit Retried
+                AckRetry (RetryDelay delay)
+                  | attempt == cfg.readerRetryLimit -> case cfg.readerDeadLetters of
+                      Nothing -> throwIO (ReaderRetryLimit entry.entryId)
+                      Just _ -> do
+                        restore (reject MaxRetriesExceeded)
+                        atomically (putTMVar gate Advance)
+                  | otherwise -> do
+                      let micros = max 0 (min (toInteger (maxBound :: Int)) (ceiling (delay * 1000000)))
+                      atomically (putTMVar gate (RepeatAfter (fromInteger micros)))
+                      emit Retried
                 AckHalt _ -> stopIntake runtime
         case decodeEnvelope cfg.readerDecode cfg.readerHeaders entry of
           Left (DecodeFailure _ reason) -> reject reason >> pull (Ready rest)

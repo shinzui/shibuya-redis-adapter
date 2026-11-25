@@ -90,7 +90,7 @@ The adapter-author guidance for tracing is `docs/user/opentelemetry.md` in the s
 | # | Title | Path | Hard Deps | Soft Deps | Status |
 |---|-------|------|-----------|-----------|--------|
 | 5 | Correct consumer-group retry, recovery and lease fencing | [docs/plans/5-correct-consumer-group-retry-recovery-and-lease-fencing.md](../plans/5-correct-consumer-group-retry-recovery-and-lease-fencing.md) | None | None | Complete |
-| 6 | Dead-letter exhausted reader retries and retry reader rejection writes | [docs/plans/6-dead-letter-exhausted-reader-retries-and-retry-reader-rejection-writes.md](../plans/6-dead-letter-exhausted-reader-retries-and-retry-reader-rejection-writes.md) | None | None | Not Started |
+| 6 | Dead-letter exhausted reader retries and retry reader rejection writes | [docs/plans/6-dead-letter-exhausted-reader-retries-and-retry-reader-rejection-writes.md](../plans/6-dead-letter-exhausted-reader-retries-and-retry-reader-rejection-writes.md) | None | None | Complete |
 | 7 | Propagate trace context and Redis span attributes | [docs/plans/7-propagate-trace-context-and-redis-span-attributes.md](../plans/7-propagate-trace-context-and-redis-span-attributes.md) | None | EP-5, EP-6 | Not Started |
 | 8 | Narrow, name and document the public API | [docs/plans/8-narrow-name-and-document-the-public-api.md](../plans/8-narrow-name-and-document-the-public-api.md) | EP-5, EP-6, EP-7 | None | Not Started |
 | 9 | Package and qualify the 0.1.0.0 release | [docs/plans/9-package-and-qualify-the-0-1-0-0-release.md](../plans/9-package-and-qualify-the-0-1-0-0-release.md) | EP-8 | None | Not Started |
@@ -133,7 +133,7 @@ Decisions that should become or amend ADRs: retry eligibility no longer requires
 ## Progress
 
 
-EP-5 is complete and all four suites passed on Redis 8.10.1. EP-6 is next. The final acceptance gate, owned by EP-9, is all test suites passing on Redis 7.2.17 and 8.10.1 with `cabal check` clean.
+EP-5 and EP-6 are complete and all four suites passed on Redis 8.10.1. EP-7 is next. The final acceptance gate, owned by EP-9, is all test suites passing on Redis 7.2.17 and 8.10.1 with `cabal check` clean.
 
 
 ## Surprises & Discoveries

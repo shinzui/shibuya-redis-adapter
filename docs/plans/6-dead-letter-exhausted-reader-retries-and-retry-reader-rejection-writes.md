@@ -11,6 +11,12 @@ provenance:
     model: "claude-fable-5-2"
     harness: "claude-code"
     at: 2026-11-25T13:50:20Z
+  revisions:
+    - model: "gpt-6.2-sol"
+      harness: "codex-cli"
+      at: 2026-11-25T14:05:18Z
+      mode: "implement"
+      note: "Dead-letter exhausted reader retries and recover rejection writes"
 ---
 
 # Dead-letter exhausted reader retries and retry reader rejection writes
@@ -30,9 +36,9 @@ An independent reader gives one consumer its own ordered copy of a Redis Stream 
 ## Progress
 
 
-- [ ] M1. With a dead-letter hash configured, an entry that exhausts `readerRetryLimit` produces one `max_retries_exceeded` record, the checkpoint advances and the next entry is delivered; without one, the reader stops with its checkpoint before the entry.
-- [ ] M2. A dropped command connection during the rejection write for an undecodable entry is retried and the reader continues.
-- [ ] All suites pass and ADR 3 is amended.
+- [x] M1. With a dead-letter hash configured, an entry that exhausts `readerRetryLimit` produces one `max_retries_exceeded` record, the checkpoint advances and the next entry is delivered; without one, the reader stops with its checkpoint before the entry. Verified 2026-11-25. The test observes attempts 0 and 1, one rejection and the second checkpoint.
+- [x] M2. A dropped command connection during the rejection write for an undecodable entry is retried and the reader continues. Verified 2026-11-25. The test closes only the borrowed command socket. It failed before the fix and now passes.
+- [x] All suites pass and ADR 3 is amended. Verified 2026-11-25. All four suites passed on Redis 8.10.1.
 
 
 ## Surprises & Discoveries
@@ -52,7 +58,7 @@ An independent reader gives one consumer its own ordered copy of a Redis Stream 
 ## Outcomes & Retrospective
 
 
-(To be filled during and after implementation.)
+Readers dead-letter exhausted entries before advancing, and a dropped command connection during a decode rejection is retried. The existing replay test still proves one hash field after an uncertain checkpoint write.
 
 
 ## Context and Orientation

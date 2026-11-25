@@ -14,6 +14,7 @@ import Effectful.Exception qualified as E
 import Fixture
 import Shibuya
 import Shibuya.Adapter.Redis
+import System.IO.Unsafe (unsafePerformIO)
 import System.Timeout (timeout)
 
 main :: IO ()
@@ -26,6 +27,8 @@ main = do
       independent pools append
       putStrLn "Reader scenario retries"
       retries pools append
+      rejectionReconnect info producer append
+      retryExhaustion pools producer append
       putStrLn "Reader scenario rejection"
       rejection pools producer append
       putStrLn "Reader scenario handover"
@@ -152,6 +155,72 @@ retries pools append = do
           readMVar replayed >>= assert "same ID after forced stop" . (== first)
         stopAppGracefully (ShutdownConfig 2 4) app >>= liftIO . assert "replayed reader drains"
   readIORef effects >>= assert "one logical external effect" . (== 1) . length
+
+retryExhaustion :: ConnectionSource -> R.Connection -> Append -> IO ()
+retryExhaustion pools producer append = do
+  let src = SourceIdentity "test" Nothing "retry-exhaustion"
+      dest = "exhausted-reader"
+      cfg = (rawReaderConfig "retry-exhaustion" "index" src Earliest) {readerRetryLimit = 1}
+      retryEntry = AckRetry (RetryDelay 0)
+  void (append src.streamKey "1-0" [("value", "poison")])
+  withReader pools cfg $ \reader -> do
+    runReader reader (const (pure retryEntry)) waitApp
+    reader.completedCheckpoint >>= assert "exhaustion without a destination preserves the checkpoint" . (== Checkpoint (EntryId 0 0) Nothing)
+  void (append src.streamKey "2-0" [("value", "healthy")])
+  seen <- newChan
+  withReader pools (cfg {readerDeadLetters = Just dest}) $ \reader -> do
+    let handle message = liftIO $ do
+          let envelope = message.envelope
+          writeChan seen (envelope.payload.entryId, envelope.attempt)
+          pure $ if envelope.payload.entryId == EntryId 1 0 then retryEntry else AckOk
+    runReader reader handle $ \app -> do
+      liftIO $
+        mapM_
+          (\expected -> readChan seen >>= assert "exhausted retries release the next entry in order" . (== expected))
+          [(EntryId 1 0, Just 0), (EntryId 1 0, Just 1), (EntryId 2 0, Just 0)]
+      stopAppGracefully (ShutdownConfig 2 4) app >>= liftIO . assert "exhausted retry processor drains"
+    reader.completedCheckpoint >>= assert "checkpoint reaches the next accepted entry" . (== Checkpoint (EntryId 2 0) Nothing)
+  records <- R.runRedis producer (R.sendRequest ["HVALS", dest]) >>= either (fail . show) pure
+  assert
+    "one exhaustion record"
+    ( case records of
+        [value] -> "max_retries_exceeded" `C8.isInfixOf` value
+        _ -> False
+    )
+
+rejectionReconnect :: R.ConnectInfo -> R.Connection -> Append -> IO ()
+rejectionReconnect info admin append = do
+  let src = SourceIdentity "test" Nothing "reject-disconnect"
+      dest = "reconnect-failures"
+      send :: (R.RedisResult a) => R.Connection -> [ByteString] -> IO a
+      send connection request = R.runRedis connection (R.sendRequest request) >>= either (fail . show) pure
+      commandInfo = info {R.connectMaxConnections = 1, R.connectNumStripes = Just 1}
+  void (append src.streamKey "1-0" [("value", "bad")])
+  void (append src.streamKey "2-0" [("value", "good")])
+  bracket (R.connect commandInfo) R.disconnect $ \commands -> do
+    client <- send @Integer commands ["CLIENT", "ID"]
+    let disconnect =
+          send @Integer admin ["CLIENT", "KILL", "ID", C8.pack (show client)]
+            >>= assert "fixture disconnects the borrowed command socket" . (== 1)
+        cfg =
+          (rawReaderConfig "reject-disconnect" "index" src Earliest)
+            { readerDecode = disconnectingDecoder disconnect,
+              readerDeadLetters = Just dest
+            }
+    withReader (BorrowCommands info commands) cfg $ \reader -> do
+      seen <- newChan
+      runReader reader (recording seen) $ \app -> do
+        liftIO (timeout 3000000 (expectIds seen [EntryId 2 0]) >>= assert "decode rejection recovers the connection" . (== Just ()))
+        stopAppGracefully (ShutdownConfig 2 4) app >>= liftIO . assert "rejection processor drains"
+      reader.completedCheckpoint >>= assert "checkpoint advances after reconnect" . (== Checkpoint (EntryId 2 0) Nothing)
+    send @Integer admin ["HLEN", dest] >>= assert "rejection written once after reconnect" . (== 1)
+
+-- Test-only fault injection at the boundary immediately before the rejection write.
+{-# NOINLINE disconnectingDecoder #-}
+disconnectingDecoder :: IO () -> RedisEntry -> Either DeadLetterReason RedisEntry
+disconnectingDecoder disconnect entry
+  | entry.entryId == EntryId 1 0 = unsafePerformIO (disconnect >> pure (Left (InvalidPayload "malformed")))
+  | otherwise = Right entry
 
 rejection :: ConnectionSource -> R.Connection -> Append -> IO ()
 rejection pools producer append = do
