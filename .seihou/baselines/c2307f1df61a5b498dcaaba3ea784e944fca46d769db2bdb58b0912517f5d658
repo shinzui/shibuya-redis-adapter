@@ -18,3 +18,5 @@ db/
 /result-*
 .pre-commit-config.yaml
 redis/
+# The managed redis/ runtime directory also matches this module on macOS.
+!src/Shibuya/Adapter/Redis/
