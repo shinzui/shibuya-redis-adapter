@@ -1,4 +1,21 @@
-module Shibuya.Adapter.Redis.Connection where
+module Shibuya.Adapter.Redis.Connection
+  ( ConnectionSource (..),
+    RuntimeOptions (..),
+    defaultRuntimeOptions,
+    RedisRuntime (options, stopped),
+    AdapterError (..),
+    withRedisRuntime,
+    stopIntake,
+    runCommand,
+    DeliveryMode (..),
+    validateDeliveryPolicy,
+    readBatchOptions,
+    pollStream,
+    retryConnection,
+    streamEntries,
+    streamRecord,
+  )
+where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (race)

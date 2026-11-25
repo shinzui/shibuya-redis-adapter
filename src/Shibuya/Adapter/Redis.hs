@@ -1,18 +1,21 @@
+-- | Redis Streams readers and consumer-group workers for Shibuya.
 module Shibuya.Adapter.Redis
-  ( EntryId (..),
+  ( -- * Runtime
+    withRedisRuntime,
+    ConnectionSource (..),
+    RuntimeOptions (..),
+    defaultRuntimeOptions,
+    RedisRuntime,
+    stopIntake,
+
+    -- * Sources and entries
+    SourceIdentity (..),
+    EntryId (..),
     renderEntryId,
     parseEntryId,
-    SourceIdentity (..),
     RedisEntry (..),
-    entryEnvelope,
-    DecodeFailure (..),
-    decodeEnvelope,
-    defaultTraceContext,
-    AdapterEvent (..),
-    RejectionOwner (..),
-    rejectionRecord,
-    storeRejection,
-    mkRedisAdapter,
+
+    -- * Independent readers
     ReaderConfig (..),
     ReaderStart (..),
     Checkpoint (..),
@@ -20,35 +23,35 @@ module Shibuya.Adapter.Redis
     GapEvidence (..),
     ReaderGap (..),
     GapAction (..),
-    ReaderError (..),
     Reader (..),
     rawReaderConfig,
     newReader,
     readerProcessor,
-    Group (..),
+
+    -- * Consumer groups
     GroupConfig (..),
     GroupStart (..),
-    GroupError (..),
+    Group (..),
     MissingPending (..),
     rawGroupConfig,
     newGroupWorker,
     groupProcessor,
-    RedisRuntime,
-    RuntimeOptions (..),
-    defaultRuntimeOptions,
-    ConnectionSource (..),
-    DeliveryMode (..),
-    validateDeliveryPolicy,
-    readBatchOptions,
+
+    -- * Events and errors
+    AdapterEvent (..),
     AdapterError (..),
-    withRedisRuntime,
-    runCommand,
-    pollStream,
-    stopIntake,
+    ReaderError (..),
+    GroupError (..),
+
+    -- * Dead-letter records
+    RejectionOwner (..),
+    rejectionRecord,
+
+    -- * Telemetry
+    defaultTraceContext,
   )
 where
 
-import Shibuya.Adapter.Redis.Adapter
 import Shibuya.Adapter.Redis.Connection
 import Shibuya.Adapter.Redis.DeadLetter
 import Shibuya.Adapter.Redis.Group

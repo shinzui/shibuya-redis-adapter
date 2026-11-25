@@ -17,7 +17,17 @@ common shared
     OverloadedRecordDot
     OverloadedStrings
 
-  ghc-options: -Wall
+  ghc-options:
+    -Wall
+    -Wcompat
+    -Widentities
+    -Wincomplete-uni-patterns
+    -Wincomplete-record-updates
+    -Wredundant-constraints
+    -Wmissing-export-lists
+    -Wpartial-fields
+    -Wmissing-deriving-strategies
+
   build-depends:
     base >=4.21 && <5,
     bytestring,
@@ -28,7 +38,10 @@ common shared
 library
   import: shared
   hs-source-dirs: src
-  exposed-modules: Shibuya.Adapter.Redis
+  exposed-modules:
+    Shibuya.Adapter.Redis
+    Shibuya.Adapter.Redis.Internal
+
   other-modules:
     Shibuya.Adapter.Redis.Adapter
     Shibuya.Adapter.Redis.Connection

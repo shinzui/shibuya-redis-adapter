@@ -1,4 +1,15 @@
-module Shibuya.Adapter.Redis.Group where
+module Shibuya.Adapter.Redis.Group
+  ( GroupStart (..),
+    MissingPending (..),
+    GroupError (..),
+    GroupConfig (..),
+    rawGroupConfig,
+    Group (..),
+    groupProcessor,
+    groupAttemptKey,
+    newGroupWorker,
+  )
+where
 
 import Control.Concurrent.STM
 import Control.Exception (Exception, catch, mask, throwIO)

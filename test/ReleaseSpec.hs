@@ -1,4 +1,4 @@
-module Main where
+module Main (main) where
 
 import Control.Concurrent
 import Control.Concurrent.Async (withAsync)
@@ -13,6 +13,7 @@ import Effectful.Exception qualified as E
 import Fixture
 import Shibuya
 import Shibuya.Adapter.Redis
+import Shibuya.Adapter.Redis.Internal
 import Streamly.Data.Stream qualified as Stream
 import System.Timeout (timeout)
 

@@ -1,4 +1,4 @@
-module Main where
+module Main (main) where
 
 import Data.ByteString.Builder qualified as Builder
 import Data.ByteString.Lazy qualified as LBS

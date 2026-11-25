@@ -1,5 +1,20 @@
 -- | Binary stream entries and their Shibuya envelope representation.
-module Shibuya.Adapter.Redis.Types where
+module Shibuya.Adapter.Redis.Types
+  ( EntryId (..),
+    renderEntryId,
+    parseEntryId,
+    SourceIdentity (..),
+    RedisEntry (..),
+    frame,
+    entryIdentity,
+    entryEnvelope,
+    defaultTraceContext,
+    DecodeFailure (..),
+    decodeEnvelope,
+    AdapterEvent (..),
+    groupStatePrefix,
+  )
+where
 
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS

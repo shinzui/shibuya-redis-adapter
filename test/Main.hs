@@ -1,4 +1,4 @@
-module Main where
+module Main (main) where
 
 import Control.Concurrent
 import Control.Concurrent.Async (wait, withAsync)
@@ -16,6 +16,7 @@ import OpenTelemetry.Attributes (toAttribute)
 import Shibuya
 import Shibuya.Adapter.Redis
 import Shibuya.Adapter.Redis qualified as ReaderFields (ReaderConfig (telemetry))
+import Shibuya.Adapter.Redis.Internal
 import Streamly.Data.Stream qualified as Stream
 import System.Timeout (timeout)
 

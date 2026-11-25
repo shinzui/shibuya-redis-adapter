@@ -11,6 +11,12 @@ provenance:
     model: "claude-fable-5-2"
     harness: "claude-code"
     at: 2026-11-25T13:50:20Z
+  revisions:
+    - model: "gpt-6.2-sol"
+      harness: "codex-cli"
+      at: 2026-11-25T14:16:26Z
+      mode: "implement"
+      note: "Define and document the public API and enforce one processor per runtime"
 ---
 
 # Narrow, name and document the public API
@@ -30,7 +36,7 @@ Once a library is published, every name it exports is a promise. Today the singl
 ## Progress
 
 
-- [ ] M1. Internals are exported from `Shibuya.Adapter.Redis.Internal`; the facade has a sectioned export list; every module has an explicit export list and builds under the stricter warning set.
+- [x] M1. Internals are exported from `Shibuya.Adapter.Redis.Internal`; the facade has a sectioned export list; every module has an explicit export list and builds under the stricter warning set. Verified 2026-11-25. The build emitted no GHC warnings, and a scratch import of runCommand failed from the facade and compiled from Internal.
 - [ ] M2. `readerName` is renamed `readerAdapterName`; the default configurations are built with named fields; the facade re-exports Shibuya's telemetry types.
 - [ ] M3. Attaching a second reader or worker to a runtime throws `RuntimeAlreadyAttached`, proven by a test.
 - [ ] M4. Every export of the facade has Haddock documentation and the module header explains lifecycle, decisions and retry semantics; a new ADR records the public/internal boundary.

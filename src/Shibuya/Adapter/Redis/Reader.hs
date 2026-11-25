@@ -1,4 +1,18 @@
-module Shibuya.Adapter.Redis.Reader where
+module Shibuya.Adapter.Redis.Reader
+  ( Checkpoint (..),
+    CheckpointStore (..),
+    ReaderStart (..),
+    GapEvidence (..),
+    ReaderGap (..),
+    GapAction (..),
+    ReaderError (..),
+    ReaderConfig (..),
+    rawReaderConfig,
+    Reader (..),
+    readerProcessor,
+    newReader,
+  )
+where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (race)

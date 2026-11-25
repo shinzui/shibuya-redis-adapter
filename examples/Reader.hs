@@ -1,4 +1,4 @@
-module Main where
+module Main (main) where
 
 import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as C8

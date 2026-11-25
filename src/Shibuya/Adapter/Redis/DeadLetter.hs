@@ -1,4 +1,9 @@
-module Shibuya.Adapter.Redis.DeadLetter where
+module Shibuya.Adapter.Redis.DeadLetter
+  ( RejectionOwner (..),
+    rejectionRecord,
+    storeRejection,
+  )
+where
 
 import Data.ByteString (ByteString)
 import Data.Maybe (fromMaybe)
