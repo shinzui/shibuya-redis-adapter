@@ -9,6 +9,8 @@ This Haskell library connects Shibuya processors to one Redis Stream per adapter
 
 Both constructors accept a raw binary entry or a typed decoder. They preserve field order and duplicate names. The envelope's stable message ID is an application idempotency key. Commit external effects with that key in durable application storage when they must survive replay.
 
+See the [adapter guides and reference](docs/user/index.md) for integration details and the [capability catalog](docs/capabilities/index.md) for the behavior and limits of each feature.
+
 ## Run both examples
 
 The package builds its library by default. The repository's `cabal.project` and Nix build enable the `examples` flag. Use `-fexamples` when building from the source archive.

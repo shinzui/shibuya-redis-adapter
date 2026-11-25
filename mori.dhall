@@ -38,6 +38,21 @@ let pkgRef =
         , key = Some key
         }
 
+let okfBinding =
+      \(profileExport : Text) ->
+        Some
+          ( Schema.ProfileBinding.Published
+              Schema.PinnedImport::{
+              , publisher = "mori://shinzui/okf-profiles"
+              , publisherRef = Some
+                  Schema.MoriRef::{ namespace = "shinzui", name = "okf-profiles" }
+              , export = Some profileExport
+              , version = Some "v0.25.0"
+              , pin = Some
+                  "sha256:ec74cc6f7b8ee1a5af81ee7fc8804f35cf2c9ba4010671d9e881da72eb6719d3"
+              }
+          )
+
 in  Schema.Project::{
     , project = Schema.ProjectIdentity::{
       , name = "shibuya-redis-adapter"
@@ -130,6 +145,22 @@ in  Schema.Project::{
         , okfVersion = "0.2"
         , description = Some
             "Friction met while implementing plans, before triage"
+        }
+      , Schema.OkfBundle::{
+        , name = "user-documentation"
+        , path = "docs/user"
+        , profile = Some "docs/user/profile.dhall"
+        , profileBinding = okfBinding "documentation.userDocumentation"
+        , okfVersion = "0.2"
+        , description = Some "Integration guides and delivery semantics for Redis Streams processors"
+        }
+      , Schema.OkfBundle::{
+        , name = "capabilities"
+        , path = "docs/capabilities"
+        , profile = Some "docs/capabilities/profile.dhall"
+        , profileBinding = okfBinding "coordination.capabilities"
+        , okfVersion = "0.2"
+        , description = Some "Consumer-facing adapter capabilities, limits and repository evidence"
         }
       ]
     }

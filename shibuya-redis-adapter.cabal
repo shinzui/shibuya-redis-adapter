@@ -21,10 +21,14 @@ build-type: Simple
 extra-doc-files:
   CHANGELOG.md
   README.md
+  docs/capabilities/*.md
+  docs/user/*.md
 
 extra-source-files:
+  docs/capabilities/profile.dhall
   docs/compatibility.md
   docs/initial-spec.md
+  docs/user/profile.dhall
 
 source-repository head
   type: git
