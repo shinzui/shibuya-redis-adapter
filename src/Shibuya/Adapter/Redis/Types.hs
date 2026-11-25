@@ -80,5 +80,9 @@ data AdapterEvent
   | DeadLettered
   | CheckpointFailed
   | HistoryGap
+  | PendingPayloadMissing
   | PendingSample !Integer !(Maybe Integer)
   deriving stock (Eq, Show)
+
+groupStatePrefix :: ByteString
+groupStatePrefix = "shibuya:group:v1:"

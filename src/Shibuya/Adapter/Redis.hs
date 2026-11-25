@@ -12,6 +12,26 @@ module Shibuya.Adapter.Redis
     rejectionRecord,
     storeRejection,
     mkRedisAdapter,
+    ReaderConfig (..),
+    ReaderStart (..),
+    Checkpoint (..),
+    CheckpointStore (..),
+    GapEvidence (..),
+    ReaderGap (..),
+    GapAction (..),
+    ReaderError (..),
+    Reader (..),
+    rawReaderConfig,
+    newReader,
+    readerProcessor,
+    Group (..),
+    GroupConfig (..),
+    GroupStart (..),
+    GroupError (..),
+    MissingPending (..),
+    rawGroupConfig,
+    newGroupWorker,
+    groupProcessor,
     RedisRuntime,
     RuntimeOptions (..),
     defaultRuntimeOptions,
@@ -27,21 +47,9 @@ module Shibuya.Adapter.Redis
   )
 where
 
-import Data.Text (Text)
-import Effectful (Eff, IOE, liftIO, (:>))
-import Shibuya (Adapter (..), Ingested)
+import Shibuya.Adapter.Redis.Adapter
 import Shibuya.Adapter.Redis.Connection
 import Shibuya.Adapter.Redis.DeadLetter
+import Shibuya.Adapter.Redis.Group
+import Shibuya.Adapter.Redis.Reader
 import Shibuya.Adapter.Redis.Types
-import Streamly.Data.Stream (Stream)
-
--- | Attach a mode's delivery stream to the runner. Keep the runtime bracket
--- around the application until all finalizers have drained.
-mkRedisAdapter :: (IOE :> es) => RedisRuntime -> Text -> Stream (Eff es) (Ingested es a) -> Adapter es a
-mkRedisAdapter runtime name deliveries =
-  Adapter
-    { adapterName = name,
-      source = deliveries,
-      shutdown = liftIO (stopIntake runtime),
-      telemetry = runtime.options.adapterTelemetry
-    }

@@ -5,11 +5,18 @@ title: "Deliver ordered independent readers with checkpoints"
 kind: exec-plan
 created_at: 2026-11-25T05:44:26Z
 master_plan: "docs/masterplans/1-build-the-shibuya-redis-streams-adapter.md"
+intention: intention_01m89djerpehcanj7cg6j7e431
 provenance:
   created_by:
     model: "gpt-6.2-astra"
     harness: "codex-cli"
     at: 2026-11-25T05:44:26Z
+  revisions:
+    - model: "gpt-6.2-sol"
+      harness: "codex-cli"
+      at: 2026-11-25T13:15:07Z
+      mode: "implement"
+      note: "Implement independent reader intake, checkpointing and recovery."
 ---
 
 # Deliver ordered independent readers with checkpoints
@@ -29,8 +36,8 @@ Two independent projections can consume every retained entry and resume at diffe
 ## Progress
 
 
-- [ ] Independent starts and checkpoint restart yield the expected ordered IDs on two connections.
-- [ ] Retry, permanent rejection, history loss and crash boundaries preserve contiguous completed progress.
+- [x] 2026-11-25. Two projections read independently and resume at the saved cursor. The reader suite also passed empty-live startup and a dropped read connection.
+- [x] 2026-11-25. The reader suite passed A,A,B retry, crash replay, idempotent rejection after failed save, halt and producer continuity checks.
 
 
 ## Surprises & Discoveries
@@ -46,6 +53,9 @@ Two independent projections can consume every retained entry and resume at diffe
 
 
 ## Outcomes & Retrospective
+
+
+The reader-integration suite passed with a private Redis 8.10.1 server and the real Shibuya runner. Checkpoint ownership, progress and continuity evidence are recorded in [ADR 0003](../adr/0003-commit-reader-checkpoints-in-stream-order.md). The release suite covers projection progress when both modes share a stream.
 
 
 

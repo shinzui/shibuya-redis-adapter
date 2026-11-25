@@ -3,7 +3,10 @@ name: shibuya-redis-adapter
 version: 0.1.0.0
 synopsis: Redis Streams adapter for Shibuya
 build-type: Simple
-extra-source-files: docs/initial-spec.md
+extra-source-files:
+  README.md
+  docs/compatibility.md
+  docs/initial-spec.md
 
 common shared
   default-language: GHC2024
@@ -27,20 +30,24 @@ library
   hs-source-dirs: src
   exposed-modules: Shibuya.Adapter.Redis
   other-modules:
+    Shibuya.Adapter.Redis.Adapter
     Shibuya.Adapter.Redis.Connection
     Shibuya.Adapter.Redis.DeadLetter
+    Shibuya.Adapter.Redis.Group
+    Shibuya.Adapter.Redis.Group.Scripts
+    Shibuya.Adapter.Redis.Reader
     Shibuya.Adapter.Redis.Types
 
   build-depends:
     async,
+    containers,
     effectful-core,
+    entropy,
     stm,
     streamly-core,
 
-test-suite runner-fixture
+common redis-integration
   import: shared
-  type: exitcode-stdio-1.0
-  main-is: Main.hs
   other-modules: Fixture
   hs-source-dirs: test
   ghc-options: -threaded
@@ -53,3 +60,46 @@ test-suite runner-fixture
     shibuya-redis-adapter,
     streamly-core,
     temporary,
+
+test-suite runner-fixture
+  import: redis-integration
+  type: exitcode-stdio-1.0
+  main-is: Main.hs
+
+test-suite reader-integration
+  import: redis-integration
+  type: exitcode-stdio-1.0
+  main-is: ReaderSpec.hs
+
+test-suite group-integration
+  import: redis-integration
+  type: exitcode-stdio-1.0
+  main-is: GroupSpec.hs
+
+test-suite release-integration
+  import: redis-integration
+  type: exitcode-stdio-1.0
+  main-is: ReleaseSpec.hs
+
+common example
+  import: shared
+  other-modules: Example
+  hs-source-dirs: examples
+  ghc-options: -threaded
+  build-depends:
+    containers,
+    effectful-core,
+    shibuya-redis-adapter,
+
+executable reader-example
+  import: example
+  main-is: Reader.hs
+  build-depends:
+    directory,
+    filepath,
+    temporary,
+
+executable worker-example
+  import: example
+  main-is: Worker.hs
+  build-depends: entropy

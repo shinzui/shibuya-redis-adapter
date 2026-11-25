@@ -1,0 +1,9 @@
+# Fence group finalizers with Redis attempt state
+
+Accepted 2026-11-25.
+
+One Redis primary owns each group's delivery position and pending entries. Workers use unique consumer names for every running instance and a shared source namespace and generation. A new delivery can register only while the first pending generation still belongs to its consumer. Recovery rotates a random 192-bit attempt token and records the pending delivery count in the same Redis script as XCLAIM. Late callbacks must match all three values: owner, token and pending delivery count. This remains true when ownership returns to a previous consumer. Administrative changes to a live group or its metadata can invalidate the protocol.
+
+The reserved key prefix is `shibuya:group:v1:`. Each pending entry has a hash key formed by appending the framed group and binary source-entry identity. A retry stores its due time using Redis server time and invalidates its token. Lease renewal retains the token and delivery count and extends the eligibility deadline. Completion acknowledges the pending ID and removes its attempt hash. A missing-payload diagnostic gives the application the source and ID before the adapter acknowledges that unrecoverable pending row. Recovery rotates through bounded pages and alternates with reads of new work. Unregistered assignments remain recoverable through the same pending scan.
+
+Dead-letter finalization checks ownership, inserts one idempotent failure record and XACKs the attempt in one script. If Redis reports an error after the record was written, the same callback can repeat the operation while it owns the entry. If Redis completed the operation but the reply was lost, repeating the callback sees the absent pending row and cleans up any leftover attempt metadata. Retain failure records through the maximum replay horizon and pending metadata for the life of the pending entry. Application effects still require their own idempotency.

@@ -4,6 +4,7 @@ slug: build-the-shibuya-redis-streams-adapter
 title: "Build the Shibuya Redis Streams adapter"
 kind: master-plan
 created_at: 2026-11-25T05:44:10Z
+intention: intention_01m89djerpehcanj7cg6j7e431
 provenance:
   created_by:
     model: "gpt-6.2-astra"
@@ -15,6 +16,11 @@ provenance:
       at: 2026-11-25T05:54:57Z
       mode: "implement"
       note: "Coordinate bootstrap and runner acceptance."
+    - model: "gpt-6.2-sol"
+      harness: "codex-cli"
+      at: 2026-11-25T13:15:07Z
+      mode: "implement"
+      note: "Implement and qualify the Redis delivery modes."
 ---
 
 # Build the Shibuya Redis Streams adapter
@@ -44,9 +50,9 @@ Mori indexes the architecture guide but has no decision bundle for `mori://shinz
 | # | Title | Path | Hard deps | Soft deps | Status |
 |---|---|---|---|---|---|
 | 1 | Bootstrap a buildable adapter and Redis runner fixture | [docs/plans/1-bootstrap-a-buildable-adapter-and-redis-runner-fixture.md](../../docs/plans/1-bootstrap-a-buildable-adapter-and-redis-runner-fixture.md) | None | None | Complete |
-| 2 | Deliver ordered independent readers with checkpoints | [docs/plans/2-deliver-ordered-independent-readers-with-checkpoints.md](../../docs/plans/2-deliver-ordered-independent-readers-with-checkpoints.md) | EP-1 | None | Not Started |
-| 3 | Distribute and recover fenced consumer group work | [docs/plans/3-distribute-and-recover-fenced-consumer-group-work.md](../../docs/plans/3-distribute-and-recover-fenced-consumer-group-work.md) | EP-1 | None | Not Started |
-| 4 | Qualify both delivery modes for release | [docs/plans/4-qualify-both-delivery-modes-for-release.md](../../docs/plans/4-qualify-both-delivery-modes-for-release.md) | EP-2, EP-3 | None | Not Started |
+| 2 | Deliver ordered independent readers with checkpoints | [docs/plans/2-deliver-ordered-independent-readers-with-checkpoints.md](../../docs/plans/2-deliver-ordered-independent-readers-with-checkpoints.md) | EP-1 | None | Complete |
+| 3 | Distribute and recover fenced consumer group work | [docs/plans/3-distribute-and-recover-fenced-consumer-group-work.md](../../docs/plans/3-distribute-and-recover-fenced-consumer-group-work.md) | EP-1 | None | Complete |
+| 4 | Qualify both delivery modes for release | [docs/plans/4-qualify-both-delivery-modes-for-release.md](../../docs/plans/4-qualify-both-delivery-modes-for-release.md) | EP-2, EP-3 | None | Complete |
 
 
 ## Dependency Graph
@@ -64,13 +70,13 @@ EP-1 owns the root Cabal file, Shibuya.Adapter.Redis facade, flake, test harness
 ## Progress
 
 
-EP-1 passed on Apple Silicon with Redis 8.10.1. EP-2 and EP-3 can now start independently against the shared package and fixture. EP-4 awaits both public delivery constructors.
+All four child plans are complete. All four integration suites passed on Redis 7.2.17 and 8.10.1 on Apple Silicon. The managed-service demos, Apple Silicon flake checks and unpacked Cabal build passed.
 
 
 ## Surprises & Discoveries
 
 
-The read pool must close after polling stops, while the command pool must remain usable through the runner drain. Both modes share the [resource lifetime](../adr/0002-keep-command-connections-through-runner-drain.md) and [wire identity and rejection contracts](../adr/0001-stream-identity-and-rejection-records.md).
+The read pool must close after polling stops, while the command pool must remain usable through the runner drain. The [reader checkpoint](../adr/0003-commit-reader-checkpoints-in-stream-order.md) and [group attempt state](../adr/0004-fence-group-finalizers-with-redis-attempt-state.md) own different progress mechanisms. Both modes share the [resource lifetime](../adr/0002-keep-command-connections-through-runner-drain.md) and [wire identity and rejection contracts](../adr/0001-stream-identity-and-rejection-records.md).
 
 
 
@@ -83,3 +89,7 @@ The read pool must close after polling stops, while the command pool must remain
 
 
 ## Outcomes & Retrospective
+
+The adapter ships ordered readers with restartable checkpoints and consumer-group workers with fenced recovery. The combined suite verified that both modes can share a stream, that a projection resumes after Redis restarts, and that a halted worker leaves its pending job recoverable without interrupting the reader. The [examples](../../README.md#run-both-examples) and [compatibility guide](../compatibility.md) document the public setup and verified operating conditions.
+
+Durable decisions are recorded in the local ADRs for wire identity, shutdown, checkpoint ownership and group fencing. No initiative-level friction remains open.

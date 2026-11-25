@@ -5,11 +5,18 @@ title: "Distribute and recover fenced consumer group work"
 kind: exec-plan
 created_at: 2026-11-25T05:44:26Z
 master_plan: "docs/masterplans/1-build-the-shibuya-redis-streams-adapter.md"
+intention: intention_01m89djerpehcanj7cg6j7e431
 provenance:
   created_by:
     model: "gpt-6.2-astra"
     harness: "codex-cli"
     at: 2026-11-25T05:44:26Z
+  revisions:
+    - model: "gpt-6.2-sol"
+      harness: "codex-cli"
+      at: 2026-11-25T13:30:30Z
+      mode: "implement"
+      note: "Implement and verify consumer group assignment, fencing and recovery."
 ---
 
 # Distribute and recover fenced consumer group work
@@ -29,8 +36,8 @@ Competing workers divide new jobs in one group, recover abandoned jobs and prese
 ## Progress
 
 
-- [ ] New deliveries and bounded pending recovery make progress under load and survive worker replacement.
-- [ ] Ownership changes, retry deadlines and ambiguous finalizer replies preserve the current attempt and a single logical failure record.
+- [x] 2026-11-25. Two workers divided assignments, a separate group saw every ID, and a one-entry scan advanced past ineligible rows while admitting new jobs.
+- [x] 2026-11-25. Ownership fences survived A→B→A, renewal, retry across worker restart and rejection replay. A restricted Redis credential proved replay after the rejection write succeeded and XACK failed.
 
 
 ## Surprises & Discoveries
@@ -46,6 +53,9 @@ Competing workers divide new jobs in one group, recover abandoned jobs and prese
 
 
 ## Outcomes & Retrospective
+
+
+The group-integration and release-integration suites passed with Redis 8.10.1. Pending recovery, retry deadlines and the namespace contract are recorded in [ADR 0004](../adr/0004-fence-group-finalizers-with-redis-attempt-state.md).
 
 
 

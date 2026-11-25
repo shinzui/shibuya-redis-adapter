@@ -8,7 +8,7 @@ import Control.Monad (unless)
 import Database.Redis qualified as Redis
 import GHC.Generics (Generic)
 import Shibuya (AdapterTelemetry, Concurrency, OrderingPolicy (..), PolicyError (..), defaultAdapterTelemetry, validatePolicy)
-import Shibuya.Adapter.Redis.Types (AdapterEvent)
+import Shibuya.Adapter.Redis.Types
 import System.Timeout (timeout)
 
 -- | Create a dedicated read pool in both cases. A borrowed command pool must
@@ -36,7 +36,15 @@ data RedisRuntime = RedisRuntime
     options :: !RuntimeOptions
   }
 
-data AdapterError = InvalidOptions | CommandTimedOut | CommandRejected Redis.Reply deriving stock (Show)
+data AdapterError = InvalidOptions | InvalidStreamReply | CommandTimedOut | CommandRejected Redis.Reply
+
+-- Redis errors can quote keys or requests. Keep the raw reply available for
+-- programmatic inspection without including it in runner failure telemetry.
+instance Show AdapterError where
+  show InvalidOptions = "InvalidOptions"
+  show InvalidStreamReply = "InvalidStreamReply"
+  show CommandTimedOut = "CommandTimedOut"
+  show (CommandRejected _) = "CommandRejected"
 
 instance Exception AdapterError
 
@@ -103,11 +111,15 @@ pollStream runtime action = do
       outcome <-
         race
           (atomically (readTVar runtime.stopped >>= check))
-          (attempt runtime.options.reconnectAttempts)
+          (retryConnection runtime (boundedRequest runtime.options runtime.readPool action))
       pure (either (const Nothing) Just outcome)
+
+-- Only use this for operations that can be repeated after a lost reply.
+retryConnection :: forall a. RedisRuntime -> IO a -> IO a
+retryConnection runtime action = attempt runtime.options.reconnectAttempts
   where
     attempt remaining =
-      boundedRequest runtime.options runtime.readPool action
+      action
         `catches` [ Handler (retry @Redis.ConnectionLostException remaining),
                     Handler (retry @Redis.ConnectTimeout remaining),
                     Handler (retry @IOException remaining),
@@ -121,3 +133,14 @@ pollStream runtime action = do
     retry remaining err
       | remaining == 0 = throwIO err
       | otherwise = threadDelay runtime.options.reconnectDelayMicros >> attempt (remaining - 1)
+
+streamEntries :: SourceIdentity -> Maybe [Redis.XReadResponse] -> IO [RedisEntry]
+streamEntries src rows = concat <$> traverse parseStream (maybe [] id rows)
+  where
+    parseStream (Redis.XReadResponse key records)
+      | key == src.streamKey = traverse (streamRecord src) records
+      | otherwise = throwIO InvalidStreamReply
+
+streamRecord :: SourceIdentity -> Redis.StreamsRecord -> IO RedisEntry
+streamRecord src (Redis.StreamsRecord rawId fields) =
+  maybe (throwIO InvalidStreamReply) (\position -> pure (RedisEntry src position fields)) (parseEntryId rawId)

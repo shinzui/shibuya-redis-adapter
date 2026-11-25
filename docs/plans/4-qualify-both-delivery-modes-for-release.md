@@ -5,11 +5,18 @@ title: "Qualify both delivery modes for release"
 kind: exec-plan
 created_at: 2026-11-25T05:44:26Z
 master_plan: "docs/masterplans/1-build-the-shibuya-redis-streams-adapter.md"
+intention: intention_01m89djerpehcanj7cg6j7e431
 provenance:
   created_by:
     model: "gpt-6.2-astra"
     harness: "codex-cli"
     at: 2026-11-25T05:44:26Z
+  revisions:
+    - model: "gpt-6.2-sol"
+      harness: "codex-cli"
+      at: 2026-11-25T13:33:50Z
+      mode: "implement"
+      note: "Qualify both processors, examples, and the release matrix."
 ---
 
 # Qualify both delivery modes for release
@@ -29,8 +36,8 @@ An application author can build a projection and a competing worker, select Redi
 ## Progress
 
 
-- [ ] Both examples run through the public constructors and real Shibuya processor runner.
-- [ ] A reproducible server matrix passes every initial-spec scenario, including lifecycle and telemetry checks.
+- [x] 2026-11-25. Both public examples printed 1-0 and then 2-0 against the managed Redis service. The reader saved 2-0 and the worker drained the pending list.
+- [x] 2026-11-25. All four suites passed on Redis 7.2.17 and 8.10.1, including server restart, restricted ACLs and telemetry redaction. The Apple Silicon flake checks and unpacked Cabal archive build passed.
 
 
 ## Surprises & Discoveries
@@ -46,6 +53,9 @@ An application author can build a projection and a competing worker, select Redi
 
 
 ## Outcomes & Retrospective
+
+
+Both delivery modes passed the initial-spec scenarios. The [compatibility and operations guide](../compatibility.md) records the exact Redis builds, suite evidence, permissions and recovery assumptions. The Cabal archive contains the Lua script module and both examples and built independently with GHC 9.12.4.
 
 
 
