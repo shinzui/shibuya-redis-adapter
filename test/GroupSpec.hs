@@ -30,14 +30,19 @@ within label action = timeout 12000000 action >>= maybe (fail (label <> " timed 
 main :: IO ()
 main = withRedis $ \info ->
   bracket (R.connect info) R.disconnect $ \admin -> do
+    within "same-consumer retry" $ sameConsumerRetry info admin "solo-retry" 1 (Just (RetryDelay 0.2))
     within "creation and distribution" $ distribution info admin
     forM_ [AckOk, AckRetry (RetryDelay 40), AckDeadLetter rejection] $ \decision ->
       within ("takeover and late " <> show decision) $ takeover info admin decision
     within "long-handler renewal" $ leaseRenewal info admin
+    within "retry deadline" $ sameConsumerRetry info admin "retry-deadline" 5000 (Just (RetryDelay 0.3))
+    within "handler exception retry" $ sameConsumerRetry info admin "retry-exception" 5000 Nothing
+    within "retry exhaustion" $ retryExhaustion info admin
+    within "script cache and active recovery" $ scriptCache info admin
     within "retry and rejection" $ retryAndReject info admin
     within "pending loss and failed destination" $ payloadLoss info admin
     within "rotating pending scan" $ boundedScan info admin
-    putStrLn "Group creation, distribution, takeover, fencing, retry, rejection, pending loss and scan fairness passed"
+    putStrLn "Group creation, distribution, takeover, fencing, solo retry, retry exhaustion, script caching, rejection, pending loss and scan fairness passed"
 
 command :: (R.RedisResult a) => R.Connection -> [ByteString] -> IO a
 command connection request = R.runRedis connection (R.sendRequest request) >>= either (fail . show) pure
@@ -161,6 +166,10 @@ takeover info admin oldDecision = do
             liftIO $ readMVar second >>= assert "B claims first generation" . (== Just 1)
             liftIO $ pending admin key gid >>= assert "B owns pending work" . ownerIs "b"
             extend item
+            status <- item.deliveryStatus
+            case status of
+              DeliverySuperseded -> pure ()
+              _ -> liftIO (fail "stale lease did not supersede the delivery")
             acknowledge item oldDecision
             liftIO $ pending admin key gid >>= assert "stale callback cannot touch B" . ownerIs "b"
             output <-
@@ -228,18 +237,13 @@ retryAndReject info admin = do
           { minimumIdleMillis = 1,
             groupDeadLetters = Just "retry-rejections"
           }
-      redisMillis = do
-        serverTime <- command @[ByteString] admin ["TIME"]
-        case serverTime of
-          [seconds, micros] -> pure (read (C8.unpack seconds) * 1000 + read (C8.unpack micros) `div` 1000 :: Integer)
-          _ -> fail "invalid server TIME reply"
   append admin key "1-0"
   initial <- newEmptyMVar
   withGroup info (cfg "a") $ \worker ->
     runWorker
       worker
       ( \message -> liftIO $ do
-          now <- redisMillis
+          now <- redisMillis admin
           putMVar initial (message.envelope.messageId, now)
           pure (AckRetry (RetryDelay 1))
       )
@@ -261,7 +265,7 @@ retryAndReject info admin = do
                 }
         instrumented = worker {groupAdapter = base {source = Stream.mapM (pure . hideReply) base.source}}
         handle message = liftIO $ do
-          now <- redisMillis
+          now <- redisMillis admin
           assert "retry did not run before due time" (now >= issued + 1000)
           assert "retry preserves message identity" (message.envelope.messageId == original && message.envelope.attempt == Just 1)
           pure (AckDeadLetter rejection)
@@ -276,6 +280,102 @@ retryAndReject info admin = do
       let AckHandle finish = delivery.ack
       finish (AckDeadLetter rejection)
   command @Integer admin ["HLEN", "retry-rejections"] >>= assert "rejection scoped to group" . (== 2)
+
+sameConsumerRetry :: R.ConnectInfo -> R.Connection -> ByteString -> Int -> Maybe RetryDelay -> IO ()
+sameConsumerRetry info admin key idle delay = do
+  let cfg = (configuration key "jobs" "solo" (CreateIfAbsent (EntryId 0 0))) {minimumIdleMillis = idle}
+  seen <- newChan
+  let handler message = liftIO $ do
+        now <- redisMillis admin
+        let envelope = message.envelope
+        writeChan seen (envelope.messageId, envelope.attempt, now)
+        case envelope.attempt of
+          Just 0 -> maybe (fail "handler failed on the first attempt") (pure . AckRetry) delay
+          _ -> pure AckOk
+  append admin key "1-0"
+  withGroup info cfg $ \worker ->
+    runWorker worker handler $ \app -> do
+      liftIO $ do
+        (original, first, issued) <- readChan seen
+        later <- timeout 2000000 (readChan seen)
+        (retried, next, delivered) <- maybe (fail "solo worker did not retry within two seconds") pure later
+        assert "retry preserves the identity and increments the attempt" (original == retried && first == Just 0 && next == Just 1)
+        forM_ delay $ \(RetryDelay duration) ->
+          assert "retry respects Redis server deadline" (delivered >= issued + floor (duration * 1000))
+      drain app
+  pending admin key "jobs" >>= assert "solo retry was acknowledged" . null
+
+redisMillis :: R.Connection -> IO Integer
+redisMillis admin = do
+  serverTime <- command @[ByteString] admin ["TIME"]
+  case serverTime of
+    [seconds, micros] -> pure (read (C8.unpack seconds) * 1000 + read (C8.unpack micros) `div` 1000)
+    _ -> fail "invalid server TIME reply"
+
+retryExhaustion :: R.ConnectInfo -> R.Connection -> IO ()
+retryExhaustion info admin = do
+  let cfg key = (configuration key "jobs" "solo" (CreateIfAbsent (EntryId 0 0))) {groupRetryLimit = 1}
+      retry = const (pure (AckRetry (RetryDelay 0)))
+  append admin "limited-pending" "1-0"
+  withGroup info (cfg "limited-pending") $ \worker -> runWorker worker retry waitApp
+  pending admin "limited-pending" "jobs" >>= assert "exhaustion preserves pending work without a destination" . ownerIs "solo"
+  seen <- newChan
+  let key = "limited-group"
+      dest = "limited-rejections"
+      handler message
+        | message.envelope.payload.entryId == EntryId 1 0 = retry message
+        | otherwise = record seen "solo" message
+  append admin key "1-0"
+  withGroup info ((cfg key) {groupDeadLetters = Just dest}) $ \worker ->
+    runWorker worker handler $ \app -> do
+      liftIO $ do
+        await ((== 1) <$> command @Integer admin ["HLEN", dest])
+        command @[ByteString] admin ["HVALS", dest] >>= \records ->
+          assert
+            "one rejection with the exhaustion reason"
+            ( case records of
+                [value] -> "max_retries_exceeded" `C8.isInfixOf` value
+                _ -> False
+            )
+        append admin key "2-0"
+        readChan seen >>= assert "same worker processes the next job" . (== ("solo", EntryId 2 0))
+      drain app
+  pending admin key "jobs" >>= assert "no pending work after dead-lettering" . null
+
+scriptCache :: R.ConnectInfo -> R.Connection -> IO ()
+scriptCache info admin = do
+  let key = "script-cache"
+      cfg = (configuration key "jobs" "solo" (CreateIfAbsent (EntryId 0 0))) {groupInFlight = 2}
+      stats = command @ByteString admin ["INFO", "commandstats"]
+      count prefix = map (C8.takeWhile (/= ',')) . filter (prefix `C8.isPrefixOf`) . C8.lines
+  started <- newEmptyMVar
+  release <- newEmptyMVar
+  seen <- newChan
+  let handler message
+        | message.envelope.payload.entryId == EntryId 1 0 = liftIO $ do
+            putMVar started ()
+            readMVar release
+            pure AckOk
+        | otherwise = record seen "solo" message
+  append admin key "1-0"
+  withGroup info cfg $ \worker ->
+    runWorker worker handler $ \app -> do
+      liftIO $ do
+        readMVar started
+        before <- stats
+        threadDelay 1100000
+        after <- stats
+        assert "active row is scanned without a Lua call" $
+          count "cmdstat_xpending:" after /= count "cmdstat_xpending:" before
+            && count "cmdstat_evalsha:" after == count "cmdstat_evalsha:" before
+            && count "cmdstat_eval:" after == count "cmdstat_eval:" before
+        putMVar release ()
+        await (null <$> pending admin key "jobs")
+        void $ command @R.Status admin ["SCRIPT", "FLUSH"]
+        append admin key "2-0"
+        readChan seen >>= assert "worker reloads the flushed script" . (== ("solo", EntryId 2 0))
+      drain app
+  pending admin key "jobs" >>= assert "flushed script recovered through finalization" . null
 
 payloadLoss :: R.ConnectInfo -> R.Connection -> IO ()
 payloadLoss info admin = do

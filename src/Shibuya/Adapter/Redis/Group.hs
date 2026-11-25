@@ -99,6 +99,7 @@ newGroupWorker runtime cfg = do
     )
     (throwIO InvalidOptions)
   attachGroup runtime cfg
+  scriptHash <- groupCommand runtime (Redis.scriptLoad attemptScript)
   active <- newTVarIO Map.empty
   let freeCapacity =
         atomically $
@@ -147,13 +148,14 @@ newGroupWorker runtime cfg = do
 
       recover nextCursor [] = pull (Poll nextCursor False)
       recover _ (Pending entryId owner _ : remaining) = do
-        -- Suppress self-claim while our local delivery is still outstanding.
-        -- A different worker is free to take over at the configured deadline.
-        held <- Map.toList <$> readTVarIO active
-        let localToken = case [token | (token, Active position _) <- held, position == entryId] of
-              token : _ | owner == cfg.consumerName -> token
-              _ -> ""
-            arguments = [number cfg.minimumIdleMillis, localToken]
+        held <-
+          if owner == cfg.consumerName
+            then any (\(Active position _) -> position == entryId) <$> readTVarIO active
+            else pure False
+        if held then recover entryId remaining else claim entryId remaining
+
+      claim entryId remaining = do
+        let arguments = [number cfg.minimumIdleMillis, ""]
         token <- getEntropy 24
         result <- attempt "claim" entryId token arguments
         case result of
@@ -184,29 +186,39 @@ newGroupWorker runtime cfg = do
               modifyTVar' active (Map.delete token)
             transition operation args event = do
               result <- attempt operation entry.entryId token args
+              transitionEvent result event
+            transitionEvent result event =
               case result of
-                [Redis.Bulk (Just "retry-limit")] -> throwIO (GroupRetryLimit entry.entryId)
                 [Redis.Bulk (Just "ok")] -> pure (Just event)
                 [Redis.Bulk (Just "repeat")] -> pure Nothing
                 [Redis.Bulk (Just "absent")] -> pure Nothing
                 [Redis.Bulk (Just "stale")] -> pure (Just Superseded)
                 _ -> throwIO InvalidStreamReply
+            reject reason = do
+              let (field, value) = rejectionRecord (ConsumerGroup cfg.groupName) entry reason
+              transition "reject" [field, value] DeadLettered
+            scheduleRetry delay = do
+              let args = [milliseconds delay, number cfg.groupRetryLimit]
+              result <- attempt "retry" entry.entryId token args
+              case result of
+                [Redis.Bulk (Just "retry-limit")] -> case cfg.groupDeadLetters of
+                  Nothing -> throwIO (GroupRetryLimit entry.entryId)
+                  Just _ -> reject MaxRetriesExceeded
+                _ -> transitionEvent result Retried
             finalize decision = mask $ \restore -> do
               event <- restore $ case decision of
                 AckOk -> transition "ack" [] Acknowledged
-                AckRetry (RetryDelay delay) -> transition "retry" [milliseconds delay, number cfg.groupRetryLimit] Retried
+                AckRetry (RetryDelay delay) -> scheduleRetry delay
                 AckDeadLetter reason -> case cfg.groupDeadLetters of
                   Nothing -> throwIO (GroupRejectionWithoutDestination entry.entryId)
-                  Just _ -> do
-                    let (field, value) = rejectionRecord (ConsumerGroup cfg.groupName) entry reason
-                    transition "reject" [field, value] DeadLettered
+                  Just _ -> reject reason
                 AckHalt _ -> stopIntake runtime >> pure Nothing
               retire
               mapM_ emit event
             renew duration = do
               result <- attempt "renew" entry.entryId token [milliseconds duration]
               if superseded result
-                then emit Superseded
+                then atomically (writeTVar valid False) >> emit Superseded
                 else unless (result == [Redis.Bulk (Just "ok")]) (throwIO InvalidStreamReply)
         case decodeEnvelope cfg.groupDecode cfg.groupHeaders entry of
           Left (DecodeFailure _ reason) -> finalize (AckDeadLetter reason) >> pull next
@@ -227,7 +239,12 @@ newGroupWorker runtime cfg = do
       attempt operation position token args = do
         let keys = [src.streamKey, groupAttemptKey src cfg.groupName position] <> maybe [] pure cfg.groupDeadLetters
             arguments = [operation, cfg.groupName, cfg.consumerName, renderEntryId position, token] <> args
-        groupCommand runtime $ Redis.sendRequest (["EVAL", attemptScript, number (length keys)] <> keys <> arguments)
+        groupCommand runtime (Redis.evalsha scriptHash keys arguments)
+          `catch` \err -> case err of
+            CommandRejected (Redis.Error message)
+              | "NOSCRIPT " `C8.isPrefixOf` message ->
+                  groupCommand runtime (Redis.eval attemptScript keys arguments)
+            _ -> throwIO err
 
       sample pending = do
         reply <- groupCommand runtime $ Redis.sendRequest ["XPENDING", src.streamKey, cfg.groupName]

@@ -170,6 +170,8 @@ permissions info = withConnection info $ \admin -> do
           "+xreadgroup",
           "+xgroup|create",
           "+xpending",
+          "+script|load",
+          "+evalsha",
           "+eval",
           "+xrange",
           "+xclaim",

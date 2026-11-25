@@ -11,6 +11,12 @@ provenance:
     model: "claude-fable-5-2"
     harness: "claude-code"
     at: 2026-11-25T13:50:20Z
+  revisions:
+    - model: "gpt-6.2-sol"
+      harness: "codex-cli"
+      at: 2026-11-25T14:03:30Z
+      mode: "implement"
+      note: "Fix group retry eligibility, exhaustion, lease status and script caching"
 ---
 
 # Correct consumer-group retry, recovery and lease fencing
@@ -30,12 +36,12 @@ A consumer-group worker shares jobs from one Redis Stream with other workers. Af
 ## Progress
 
 
-- [ ] M1. A single worker receives its own retried entry: new scenario in `test/GroupSpec.hs` fails before the script fix and passes after.
-- [ ] M2. A retry runs after its requested delay even when `minimumIdleMillis` is much longer; a handler exception is redelivered promptly.
-- [ ] M3. With a dead-letter hash configured, retry exhaustion writes one `max_retries_exceeded` record and the worker keeps processing; without one, the worker stops and the entry stays pending.
-- [ ] M4. After a stale `leaseExtend`, the delivery's `deliveryStatus` reports `DeliverySuperseded`.
-- [ ] M5. The worker calls the script by its hash, recovers from `SCRIPT FLUSH`, and makes no script calls for its own in-flight rows; the restricted-credential test and permissions table are updated.
-- [ ] All suites pass and ADR 4 is amended.
+- [x] M1. A single worker receives its own retried entry: new scenario in `test/GroupSpec.hs` fails before the script fix and passes after. Verified 2026-11-25. The new solo-worker case failed before the fix and now passes.
+- [x] M2. A retry runs after its requested delay even when `minimumIdleMillis` is much longer; a handler exception is redelivered promptly. Verified 2026-11-25. The 300 ms retry meets its Redis deadline and both scenarios redeliver within two seconds.
+- [x] M3. With a dead-letter hash configured, retry exhaustion writes one `max_retries_exceeded` record and the worker keeps processing; without one, the worker stops and the entry stays pending. Verified 2026-11-25. The regression covers both terminal paths and confirms the same worker continues after rejection.
+- [x] M4. After a stale `leaseExtend`, the delivery's `deliveryStatus` reports `DeliverySuperseded`. Verified 2026-11-25. The existing A→B→A takeover now checks status immediately after stale renewal.
+- [x] M5. The worker calls the script by its hash, recovers from `SCRIPT FLUSH`, and makes no script calls for its own in-flight rows; the restricted-credential test and permissions table are updated. Verified 2026-11-25. The new cases observe a pending scan without an evaluation and continued delivery after a flush.
+- [x] All suites pass and ADR 4 is amended. Verified 2026-11-25. All four suites passed with Redis 8.10.1.
 
 
 ## Surprises & Discoveries
@@ -63,7 +69,7 @@ A consumer-group worker shares jobs from one Redis Stream with other workers. Af
 ## Outcomes & Retrospective
 
 
-(To be filled during and after implementation.)
+The worker can redeliver its own retry without waiting for the idle threshold. Retry exhaustion preserves pending work when no destination exists and otherwise rejects the entry using the existing Redis fence. The command cache falls back after a flush, and commandstats confirm polling past a locally active row does not invoke Lua.
 
 
 ## Context and Orientation
